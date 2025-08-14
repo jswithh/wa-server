@@ -1,0 +1,59 @@
+{
+  "name": "wa-server",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "prebuild": "npm run clean",
+    "test": "echo \"Run ./test-api.sh to test API endpoints\"",
+    "test:api": "./test-api.sh",
+    "lint": "echo \"Linting not configured\"",
+    "postinstall": "npm run build"
+  },
+  "author": "WhatsApp Multi-Account Server Developer",
+  "license": "ISC",
+  "keywords": [
+    "whatsapp",
+    "baileys",
+    "multi-account",
+    "api",
+    "webhook",
+    "qr-code"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "your-repository-url"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "description": "WhatsApp Multi-Account Server with Baileys and Express.js",
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@types/node": "^20.11.30",
+    "axios": "^1.6.8",
+    "baileys": "^6.7.18",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "helmet": "^7.1.0",
+    "joi": "^17.12.2",
+    "qrcode": "^1.5.3",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.6",
+    "uuid": "^9.0.1",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/qrcode": "^1.5.5",
+    "@types/uuid": "^9.0.8",
+    "nodemon": "^3.1.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.2"
+  }
+}

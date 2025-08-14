@@ -1,0 +1,1560 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>WhatsApp Multi-Account Server</title>
+        <link
+            href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
+            rel="stylesheet"
+        />
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+
+            body {
+                font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                line-height: 1.6;
+            }
+
+            .navbar {
+                background: rgba(255, 255, 255, 0.95);
+                backdrop-filter: blur(10px);
+                border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+                padding: 1rem 0;
+                position: sticky;
+                top: 0;
+                z-index: 100;
+                box-shadow: 0 2px 20px rgba(0, 0, 0, 0.1);
+            }
+
+            .navbar-content {
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 0 2rem;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+
+            .logo {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                font-size: 1.5rem;
+                font-weight: 700;
+                color: #333;
+            }
+
+            .logo i {
+                color: #25d366;
+                font-size: 2rem;
+            }
+
+            .nav-stats {
+                display: flex;
+                gap: 2rem;
+                align-items: center;
+            }
+
+            .stat-item {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                color: #666;
+                font-weight: 500;
+            }
+
+            .stat-value {
+                font-weight: 700;
+                color: #333;
+            }
+
+            .container {
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 2rem;
+            }
+
+            .dashboard-header {
+                text-align: center;
+                margin-bottom: 3rem;
+                color: white;
+            }
+
+            .dashboard-header h1 {
+                font-size: 3rem;
+                margin-bottom: 1rem;
+                font-weight: 300;
+                letter-spacing: -1px;
+            }
+
+            .dashboard-header p {
+                font-size: 1.2rem;
+                opacity: 0.9;
+                max-width: 600px;
+                margin: 0 auto;
+            }
+
+            .stats-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 1.5rem;
+                margin-bottom: 3rem;
+            }
+
+            .stat-card {
+                background: rgba(255, 255, 255, 0.95);
+                backdrop-filter: blur(10px);
+                border-radius: 16px;
+                padding: 2rem;
+                text-align: center;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                transition:
+                    transform 0.3s ease,
+                    box-shadow 0.3s ease;
+            }
+
+            .stat-card:hover {
+                transform: translateY(-4px);
+                box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+            }
+
+            .stat-card i {
+                font-size: 2.5rem;
+                margin-bottom: 1rem;
+                display: block;
+            }
+
+            .stat-card.accounts i {
+                color: #667eea;
+            }
+            .stat-card.connected i {
+                color: #26de81;
+            }
+            .stat-card.messages i {
+                color: #4facfe;
+            }
+            .stat-card.webhooks i {
+                color: #f093fb;
+            }
+
+            .stat-card h3 {
+                font-size: 2.5rem;
+                font-weight: 700;
+                color: #333;
+                margin-bottom: 0.5rem;
+            }
+
+            .stat-card p {
+                color: #666;
+                font-size: 1rem;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                font-weight: 500;
+            }
+
+            .controls-section {
+                background: rgba(255, 255, 255, 0.95);
+                backdrop-filter: blur(10px);
+                border-radius: 16px;
+                padding: 2rem;
+                margin-bottom: 2rem;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            }
+
+            .controls-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 2rem;
+            }
+
+            .controls-title {
+                font-size: 1.5rem;
+                font-weight: 600;
+                color: #333;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+
+            .form-container {
+                display: flex;
+                gap: 1rem;
+                flex-wrap: wrap;
+                align-items: end;
+            }
+
+            .input-group {
+                flex: 1;
+                min-width: 200px;
+            }
+
+            .input-group label {
+                display: block;
+                margin-bottom: 0.5rem;
+                color: #555;
+                font-weight: 500;
+                font-size: 0.9rem;
+            }
+
+            .input-group input {
+                width: 100%;
+                padding: 0.75rem 1rem;
+                border: 2px solid #e1e5e9;
+                border-radius: 8px;
+                font-size: 1rem;
+                transition:
+                    border-color 0.3s ease,
+                    box-shadow 0.3s ease;
+                background: #f8f9fa;
+            }
+
+            .input-group input:focus {
+                outline: none;
+                border-color: #667eea;
+                background: white;
+                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            }
+
+            .btn {
+                padding: 0.75rem 1.5rem;
+                border: none;
+                border-radius: 8px;
+                font-size: 1rem;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                text-decoration: none;
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                white-space: nowrap;
+            }
+
+            .btn-primary {
+                background: linear-gradient(135deg, #667eea, #764ba2);
+                color: white;
+                box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+            }
+
+            .btn-primary:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+            }
+
+            .btn-secondary {
+                background: #f8f9fa;
+                color: #6c757d;
+                border: 2px solid #e9ecef;
+            }
+
+            .btn-secondary:hover {
+                background: #e9ecef;
+                color: #495057;
+            }
+
+            .btn-success {
+                background: linear-gradient(135deg, #26de81, #20bf6b);
+                color: white;
+                box-shadow: 0 4px 15px rgba(38, 222, 129, 0.3);
+            }
+
+            .btn-success:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 25px rgba(38, 222, 129, 0.4);
+            }
+
+            .btn-danger {
+                background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+                color: white;
+                box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);
+            }
+
+            .btn-danger:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 25px rgba(255, 107, 107, 0.4);
+            }
+
+            .accounts-section {
+                background: rgba(255, 255, 255, 0.95);
+                backdrop-filter: blur(10px);
+                border-radius: 16px;
+                padding: 2rem;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            }
+
+            .section-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 2rem;
+                padding-bottom: 1rem;
+                border-bottom: 2px solid #f1f3f4;
+            }
+
+            .section-title {
+                font-size: 1.5rem;
+                font-weight: 600;
+                color: #333;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+
+            .accounts-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+                gap: 1.5rem;
+            }
+
+            .account-card {
+                background: white;
+                border-radius: 12px;
+                padding: 1.5rem;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+                border: 1px solid #e9ecef;
+                transition: all 0.3s ease;
+                position: relative;
+                overflow: hidden;
+            }
+
+            .account-card:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+            }
+
+            .account-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                margin-bottom: 1rem;
+            }
+
+            .account-info h3 {
+                font-size: 1.2rem;
+                font-weight: 600;
+                color: #333;
+                margin-bottom: 0.25rem;
+            }
+
+            .account-info .account-id {
+                color: #666;
+                font-size: 0.85rem;
+                font-family: "Courier New", monospace;
+                background: #f8f9fa;
+                padding: 2px 6px;
+                border-radius: 4px;
+                display: inline-block;
+            }
+
+            .phone-number {
+                color: #26de81;
+                font-weight: 600;
+                font-size: 0.9rem;
+                margin-top: 0.5rem;
+                display: flex;
+                align-items: center;
+                gap: 5px;
+            }
+
+            .status-badge {
+                padding: 0.4rem 0.8rem;
+                border-radius: 20px;
+                font-size: 0.75rem;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                display: flex;
+                align-items: center;
+                gap: 5px;
+                min-width: fit-content;
+            }
+
+            .status-badge i {
+                font-size: 0.7rem;
+            }
+
+            .status-badge.connected {
+                background: linear-gradient(135deg, #d4edda, #c3e6cb);
+                color: #155724;
+            }
+
+            .status-badge.disconnected {
+                background: linear-gradient(135deg, #f8d7da, #f5c6cb);
+                color: #721c24;
+            }
+
+            .status-badge.connecting {
+                background: linear-gradient(135deg, #fff3cd, #ffeaa7);
+                color: #856404;
+            }
+
+            .status-badge.qr_pending {
+                background: linear-gradient(135deg, #cce5ff, #b3d9ff);
+                color: #004085;
+            }
+
+            .qr-container {
+                text-align: center;
+                margin: 1.5rem 0;
+                min-height: 200px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .qr-code {
+                max-width: 180px;
+                width: 100%;
+                height: auto;
+                border: 3px solid #f0f0f0;
+                border-radius: 8px;
+                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            }
+
+            .qr-placeholder {
+                width: 180px;
+                height: 180px;
+                border: 2px dashed #ddd;
+                border-radius: 8px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                color: #666;
+                background: #f9f9f9;
+                text-align: center;
+                padding: 1rem;
+            }
+
+            .qr-placeholder i {
+                font-size: 2rem;
+                margin-bottom: 0.5rem;
+                opacity: 0.6;
+            }
+
+            .qr-link {
+                color: #667eea;
+                text-decoration: none;
+                font-size: 0.8rem;
+                margin-top: 0.5rem;
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+            }
+
+            .qr-link:hover {
+                text-decoration: underline;
+            }
+
+            .account-actions {
+                display: flex;
+                gap: 0.75rem;
+                flex-wrap: wrap;
+            }
+
+            .account-actions .btn {
+                flex: 1;
+                min-width: 80px;
+                font-size: 0.85rem;
+                padding: 0.6rem 1rem;
+            }
+
+            .loading-container {
+                text-align: center;
+                padding: 3rem;
+                color: white;
+            }
+
+            .spinner {
+                width: 40px;
+                height: 40px;
+                border: 3px solid rgba(255, 255, 255, 0.3);
+                border-top: 3px solid white;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+                margin: 0 auto 1rem;
+            }
+
+            @keyframes spin {
+                0% {
+                    transform: rotate(0deg);
+                }
+                100% {
+                    transform: rotate(360deg);
+                }
+            }
+
+            .empty-state {
+                text-align: center;
+                padding: 3rem 2rem;
+                color: #666;
+            }
+
+            .empty-state i {
+                font-size: 4rem;
+                margin-bottom: 1rem;
+                color: #ddd;
+            }
+
+            .empty-state h3 {
+                font-size: 1.5rem;
+                margin-bottom: 0.5rem;
+                color: #333;
+            }
+
+            .empty-state p {
+                font-size: 1rem;
+                max-width: 400px;
+                margin: 0 auto;
+            }
+
+            .notification {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                z-index: 1000;
+                max-width: 400px;
+                padding: 1rem 1.5rem;
+                border-radius: 8px;
+                box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                transform: translateX(100%);
+                transition: transform 0.3s ease;
+            }
+
+            .notification.show {
+                transform: translateX(0);
+            }
+
+            .notification.success {
+                background: linear-gradient(135deg, #26de81, #20bf6b);
+                color: white;
+            }
+
+            .notification.error {
+                background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+                color: white;
+            }
+
+            .notification.info {
+                background: linear-gradient(135deg, #667eea, #764ba2);
+                color: white;
+            }
+
+            @media (max-width: 768px) {
+                .container {
+                    padding: 1rem;
+                }
+
+                .navbar-content {
+                    padding: 0 1rem;
+                    flex-direction: column;
+                    gap: 1rem;
+                }
+
+                .nav-stats {
+                    gap: 1rem;
+                }
+
+                .dashboard-header h1 {
+                    font-size: 2rem;
+                }
+
+                .form-container {
+                    flex-direction: column;
+                }
+
+                .input-group {
+                    min-width: auto;
+                }
+
+                .accounts-grid {
+                    grid-template-columns: 1fr;
+                }
+
+                .controls-header {
+                    flex-direction: column;
+                    gap: 1rem;
+                    align-items: flex-start;
+                }
+
+                .account-actions {
+                    flex-direction: column;
+                }
+
+                .account-actions .btn {
+                    flex: none;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <!-- Navigation Bar -->
+        <nav class="navbar">
+            <div class="navbar-content">
+                <div class="logo">
+                    <i class="fab fa-whatsapp"></i>
+                    <span>WhatsApp Server</span>
+                </div>
+                <div class="nav-stats">
+                    <div class="stat-item">
+                        <i class="fas fa-users"></i>
+                        <span class="stat-value" id="navTotalAccounts">0</span>
+                        <span>Accounts</span>
+                    </div>
+                    <div class="stat-item">
+                        <i class="fas fa-link"></i>
+                        <span class="stat-value" id="navConnectedAccounts"
+                            >0</span
+                        >
+                        <span>Connected</span>
+                    </div>
+                    <div class="stat-item">
+                        <i class="fas fa-envelope"></i>
+                        <span class="stat-value" id="navTotalMessages">0</span>
+                        <span>Messages</span>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <div class="container">
+            <!-- Dashboard Header -->
+            <div class="dashboard-header">
+                <h1>WhatsApp Multi-Account Dashboard</h1>
+                <p>
+                    Manage multiple WhatsApp accounts with ease. Create,
+                    connect, and monitor all your WhatsApp instances from one
+                    centralized dashboard.
+                </p>
+            </div>
+
+            <!-- Statistics Cards -->
+            <div class="stats-grid">
+                <div class="stat-card accounts">
+                    <i class="fas fa-users"></i>
+                    <h3 id="totalAccounts">0</h3>
+                    <p>Total Accounts</p>
+                </div>
+                <div class="stat-card connected">
+                    <i class="fas fa-link"></i>
+                    <h3 id="connectedAccounts">0</h3>
+                    <p>Connected</p>
+                </div>
+                <div class="stat-card messages">
+                    <i class="fas fa-envelope"></i>
+                    <h3 id="totalMessages">0</h3>
+                    <p>Messages Sent</p>
+                </div>
+                <div class="stat-card webhooks">
+                    <i class="fas fa-clock"></i>
+                    <h3 id="pendingWebhooks">0</h3>
+                    <p>Pending Webhooks</p>
+                </div>
+            </div>
+
+            <!-- Account Controls -->
+            <div class="controls-section">
+                <div class="controls-header">
+                    <div class="controls-title">
+                        <i class="fas fa-plus-circle"></i>
+                        Create New Account
+                    </div>
+                    <div style="display: flex; gap: 1rem">
+                        <button
+                            class="btn btn-secondary"
+                            onclick="refreshData()"
+                        >
+                            <i class="fas fa-sync-alt"></i>
+                            Refresh
+                        </button>
+                        <button
+                            class="btn btn-secondary"
+                            onclick="testWebhook()"
+                        >
+                            <i class="fas fa-webhook"></i>
+                            Test Webhook
+                        </button>
+                        <button
+                            class="btn btn-success"
+                            onclick="testFunctions()"
+                        >
+                            <i class="fas fa-bug"></i>
+                            Test Functions
+                        </button>
+                    </div>
+                </div>
+
+                <div class="form-container">
+                    <div class="input-group">
+                        <label for="accountId">Account ID</label>
+                        <input
+                            type="text"
+                            id="accountId"
+                            placeholder="e.g., business_account_1"
+                            required
+                        />
+                    </div>
+                    <div class="input-group">
+                        <label for="accountName">Account Name</label>
+                        <input
+                            type="text"
+                            id="accountName"
+                            placeholder="e.g., Business WhatsApp"
+                            required
+                        />
+                    </div>
+                    <button class="btn btn-primary" onclick="createAccount()">
+                        <i class="fas fa-plus"></i>
+                        Create Account
+                    </button>
+                </div>
+            </div>
+
+            <!-- Accounts Section -->
+            <div class="accounts-section">
+                <div class="section-header">
+                    <div class="section-title">
+                        <i class="fas fa-mobile-alt"></i>
+                        WhatsApp Accounts
+                    </div>
+                    <div class="btn btn-secondary" onclick="refreshData()">
+                        <i class="fas fa-sync-alt"></i>
+                        Refresh All
+                    </div>
+                </div>
+
+                <!-- Loading State -->
+                <div class="loading-container" id="loadingContainer">
+                    <div class="spinner"></div>
+                    <p>Loading accounts...</p>
+                </div>
+
+                <!-- Accounts Grid -->
+                <div
+                    class="accounts-grid"
+                    id="accountsContainer"
+                    style="display: none"
+                >
+                    <!-- Accounts will be populated here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Notification Container -->
+        <div id="notificationContainer"></div>
+
+        <script>
+            const API_BASE = window.location.origin;
+            let accounts = [];
+            let stats = {};
+
+            // Initialize the application
+            document.addEventListener("DOMContentLoaded", function () {
+                console.log("🚀 Dashboard initialized");
+                console.log("🔧 Function check:");
+                console.log("  - createAccount:", typeof window.createAccount);
+                console.log("  - deleteAccount:", typeof window.deleteAccount);
+                console.log(
+                    "  - connectAccount:",
+                    typeof window.connectAccount,
+                );
+
+                loadInitialData();
+                setInterval(refreshData, 30000); // Refresh every 30 seconds
+
+                // Setup manual event listeners as backup
+                setupEventListeners();
+            });
+
+            function setupEventListeners() {
+                console.log("🔧 Setting up manual event listeners...");
+
+                // Create account button
+                const createBtn = document.querySelector(
+                    'button[onclick="createAccount()"]',
+                );
+                if (createBtn) {
+                    console.log("✅ Found create button, adding listener");
+                    createBtn.addEventListener("click", function (e) {
+                        console.log(
+                            "🚀 Create button clicked via event listener",
+                        );
+                        e.preventDefault();
+                        if (typeof window.createAccount === "function") {
+                            window.createAccount();
+                        } else {
+                            console.error(
+                                "❌ createAccount function not available",
+                            );
+                        }
+                    });
+                } else {
+                    console.warn("⚠️ Create button not found");
+                }
+
+                // Add delegation for dynamic buttons
+                document.addEventListener("click", function (e) {
+                    const target = e.target;
+
+                    // Handle delete buttons
+                    if (
+                        target.textContent.trim().includes("Delete") &&
+                        target.classList.contains("btn-danger")
+                    ) {
+                        console.log("🗑️ Delete button clicked via delegation");
+                        const accountId = target
+                            .getAttribute("onclick")
+                            ?.match(/deleteAccount\('([^']+)'\)/)?.[1];
+                        if (
+                            accountId &&
+                            typeof window.deleteAccount === "function"
+                        ) {
+                            e.preventDefault();
+                            window.deleteAccount(accountId);
+                        }
+                    }
+
+                    // Handle connect buttons
+                    if (
+                        target.textContent.trim().includes("Connect") &&
+                        target.classList.contains("btn-success")
+                    ) {
+                        console.log("🔌 Connect button clicked via delegation");
+                        const accountId = target
+                            .getAttribute("onclick")
+                            ?.match(/connectAccount\('([^']+)'\)/)?.[1];
+                        if (
+                            accountId &&
+                            typeof window.connectAccount === "function"
+                        ) {
+                            e.preventDefault();
+                            window.connectAccount(accountId);
+                        }
+                    }
+
+                    // Handle disconnect buttons
+                    if (
+                        target.textContent.trim().includes("Disconnect") &&
+                        target.classList.contains("btn-secondary")
+                    ) {
+                        console.log(
+                            "🔌 Disconnect button clicked via delegation",
+                        );
+                        const accountId = target
+                            .getAttribute("onclick")
+                            ?.match(/disconnectAccount\('([^']+)'\)/)?.[1];
+                        if (
+                            accountId &&
+                            typeof window.disconnectAccount === "function"
+                        ) {
+                            e.preventDefault();
+                            window.disconnectAccount(accountId);
+                        }
+                    }
+
+                    // Handle refresh QR buttons
+                    if (target.textContent.trim().includes("Refresh QR")) {
+                        console.log(
+                            "🔄 Refresh QR button clicked via delegation",
+                        );
+                        const accountId = target
+                            .getAttribute("onclick")
+                            ?.match(/refreshQR\('([^']+)'\)/)?.[1];
+                        if (
+                            accountId &&
+                            typeof window.refreshQR === "function"
+                        ) {
+                            e.preventDefault();
+                            window.refreshQR(accountId);
+                        }
+                    }
+                });
+            }
+
+            async function loadInitialData() {
+                await Promise.all([loadAccounts(), loadStats()]);
+            }
+
+            async function loadAccounts() {
+                try {
+                    const response = await fetch(`${API_BASE}/api/accounts`);
+                    const data = await response.json();
+
+                    if (data.success) {
+                        accounts = data.data;
+                        renderAccounts();
+                    } else {
+                        showNotification(
+                            "Failed to load accounts: " + data.message,
+                            "error",
+                        );
+                    }
+                } catch (error) {
+                    showNotification(
+                        "Error loading accounts: " + error.message,
+                        "error",
+                    );
+                } finally {
+                    const loadingContainer =
+                        document.getElementById("loadingContainer");
+                    const accountsContainer =
+                        document.getElementById("accountsContainer");
+                    if (loadingContainer)
+                        loadingContainer.style.display = "none";
+                    if (accountsContainer)
+                        accountsContainer.style.display = "grid";
+                }
+            }
+
+            async function loadStats() {
+                try {
+                    const response = await fetch(
+                        `${API_BASE}/api/dashboard/stats`,
+                    );
+                    const data = await response.json();
+
+                    if (data.success) {
+                        stats = data.data;
+                        updateStatsDisplay();
+                    }
+                } catch (error) {
+                    console.error("Error loading stats:", error);
+                    // Set default stats if API fails
+                    stats = {
+                        database: {
+                            totalAccounts: 0,
+                            connectedAccounts: 0,
+                            totalMessages: 0,
+                            pendingWebhooks: 0,
+                        },
+                    };
+                    updateStatsDisplay();
+                }
+            }
+
+            function updateStatsDisplay() {
+                const totalAccounts = stats.database?.totalAccounts || 0;
+                const connectedAccounts =
+                    stats.database?.connectedAccounts || 0;
+                const totalMessages = stats.database?.totalMessages || 0;
+                const pendingWebhooks = stats.database?.pendingWebhooks || 0;
+
+                // Update main stats
+                document.getElementById("totalAccounts").textContent =
+                    totalAccounts;
+                document.getElementById("connectedAccounts").textContent =
+                    connectedAccounts;
+                document.getElementById("totalMessages").textContent =
+                    totalMessages;
+                document.getElementById("pendingWebhooks").textContent =
+                    pendingWebhooks;
+
+                // Update navbar stats
+                document.getElementById("navTotalAccounts").textContent =
+                    totalAccounts;
+                document.getElementById("navConnectedAccounts").textContent =
+                    connectedAccounts;
+                document.getElementById("navTotalMessages").textContent =
+                    totalMessages;
+            }
+
+            function renderAccounts() {
+                const container = document.getElementById("accountsContainer");
+
+                if (accounts.length === 0) {
+                    container.innerHTML = `
+                    <div class="empty-state" style="grid-column: 1 / -1;">
+                        <i class="fas fa-mobile-alt"></i>
+                        <h3>No WhatsApp Accounts</h3>
+                        <p>Get started by creating your first WhatsApp account. Enter an Account ID and Name above, then click "Create Account".</p>
+                    </div>
+                `;
+                    return;
+                }
+
+                container.innerHTML = accounts
+                    .map(
+                        (account) => `
+                <div class="account-card" id="account-${account.id}">
+                    <div class="account-header">
+                        <div class="account-info">
+                            <h3>${account.name}</h3>
+                            <div class="account-id">${account.id}</div>
+                            ${account.phone_number ? `<div class="phone-number"><i class="fas fa-phone"></i> ${account.phone_number}</div>` : ""}
+                        </div>
+                        <div class="status-badge ${account.socketStatus || account.status}">
+                            ${getStatusIcon(account.socketStatus || account.status)}
+                            ${(account.socketStatus || account.status).replace("_", " ")}
+                        </div>
+                    </div>
+
+                    <div class="qr-container" id="qr-${account.id}">
+                        ${renderQRCode(account)}
+                    </div>
+
+                    <div class="account-actions">
+                        ${renderAccountActions(account)}
+                    </div>
+                </div>
+            `,
+                    )
+                    .join("");
+            }
+
+            function getStatusIcon(status) {
+                const icons = {
+                    connected: '<i class="fas fa-check-circle"></i>',
+                    connecting: '<i class="fas fa-spinner fa-spin"></i>',
+                    disconnected: '<i class="fas fa-times-circle"></i>',
+                    qr_pending: '<i class="fas fa-qrcode"></i>',
+                };
+                return (
+                    icons[status] || '<i class="fas fa-question-circle"></i>'
+                );
+            }
+
+            function renderQRCode(account) {
+                const status = account.socketStatus || account.status;
+
+                if (status === "qr_pending" && account.hasQrCode) {
+                    return `
+                    <img class="qr-code" id="qr-img-${account.id}" src="" alt="QR Code" style="display: none;">
+                    <div class="qr-placeholder" id="qr-placeholder-${account.id}">
+                        <i class="fas fa-qrcode"></i>
+                        <div>Loading QR Code...</div>
+                        <a href="/api/accounts/${account.id}/qr/page" target="_blank" class="qr-link">
+                            <i class="fas fa-external-link-alt"></i>
+                            Open in new tab
+                        </a>
+                    </div>
+                `;
+                } else if (status === "connected") {
+                    return `
+                    <div class="qr-placeholder">
+                        <i class="fas fa-check-circle" style="color: #26de81; font-size: 3rem;"></i>
+                        <div style="color: #26de81; font-weight: 600;">Connected Successfully</div>
+                    </div>
+                `;
+                } else if (status === "connecting") {
+                    return `
+                    <div class="qr-placeholder">
+                        <i class="fas fa-spinner fa-spin" style="color: #ffc107; font-size: 3rem;"></i>
+                        <div style="color: #ffc107; font-weight: 600;">Connecting...</div>
+                    </div>
+                `;
+                } else {
+                    return `
+                    <div class="qr-placeholder">
+                        <i class="fas fa-unlink" style="color: #6c757d; font-size: 3rem;"></i>
+                        <div style="color: #6c757d;">Disconnected</div>
+                        <a href="/api/accounts/${account.id}/qr/page" target="_blank" class="qr-link">
+                            <i class="fas fa-qrcode"></i>
+                            View QR Code
+                        </a>
+                    </div>
+                `;
+                }
+            }
+
+            function renderAccountActions(account) {
+                const status = account.socketStatus || account.status;
+                let actions = [];
+
+                if (status === "disconnected") {
+                    actions.push(
+                        `<button class="btn btn-success" onclick="connectAccount('${account.id}')"><i class="fas fa-play"></i> Connect</button>`,
+                    );
+                } else if (status === "connected") {
+                    actions.push(
+                        `<button class="btn btn-secondary" onclick="disconnectAccount('${account.id}')"><i class="fas fa-stop"></i> Disconnect</button>`,
+                    );
+                } else if (status === "qr_pending" || status === "connecting") {
+                    actions.push(
+                        `<button class="btn btn-secondary" onclick="refreshQR('${account.id}')"><i class="fas fa-sync-alt"></i> Refresh QR</button>`,
+                    );
+                    actions.push(
+                        `<a href="/api/accounts/${account.id}/qr/page" target="_blank" class="btn btn-primary"><i class="fas fa-qrcode"></i> View QR</a>`,
+                    );
+                }
+
+                actions.push(
+                    `<button class="btn btn-danger" onclick="deleteAccount('${account.id}')" title="Delete Account"><i class="fas fa-trash"></i> Delete</button>`,
+                );
+
+                return actions.join("");
+            }
+
+            // Account Management Functions
+            window.createAccount = async function () {
+                console.log("🚀 createAccount function called");
+
+                const accountIdInput = document.getElementById("accountId");
+                const accountNameInput = document.getElementById("accountName");
+
+                if (!accountIdInput || !accountNameInput) {
+                    console.error("❌ Input elements not found");
+                    showNotification("Form elements not found", "error");
+                    return;
+                }
+
+                const accountId = accountIdInput.value.trim();
+                const accountName = accountNameInput.value.trim();
+
+                console.log("📝 Form values:", { accountId, accountName });
+
+                if (!accountId || !accountName) {
+                    showNotification(
+                        "Please enter both account ID and name",
+                        "error",
+                    );
+                    return;
+                }
+
+                if (!/^[a-zA-Z0-9_-]+$/.test(accountId)) {
+                    showNotification(
+                        "Account ID can only contain letters, numbers, hyphens, and underscores",
+                        "error",
+                    );
+                    return;
+                }
+
+                try {
+                    console.log("🌐 Sending create request...");
+                    showNotification("Creating account...", "info");
+
+                    const response = await fetch(`${API_BASE}/api/accounts`, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                            id: accountId,
+                            name: accountName,
+                        }),
+                    });
+
+                    console.log("📡 Response status:", response.status);
+                    const data = await response.json();
+                    console.log("📄 Response data:", data);
+
+                    if (data.success) {
+                        showNotification(
+                            "Account created successfully!",
+                            "success",
+                        );
+                        accountIdInput.value = "";
+                        accountNameInput.value = "";
+                        await refreshData();
+                    } else {
+                        showNotification(
+                            "Failed to create account: " + data.message,
+                            "error",
+                        );
+                    }
+                } catch (error) {
+                    console.error("💥 Create account error:", error);
+                    showNotification(
+                        "Error creating account: " + error.message,
+                        "error",
+                    );
+                }
+            };
+
+            window.connectAccount = async function (accountId) {
+                try {
+                    showNotification("Connecting account...", "info");
+
+                    const response = await fetch(
+                        `${API_BASE}/api/accounts/${accountId}/connect`,
+                        {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                            },
+                        },
+                    );
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        showNotification(
+                            "Account connected successfully!",
+                            "success",
+                        );
+                        await refreshData();
+                    } else {
+                        showNotification(
+                            "Failed to connect account: " + data.message,
+                            "error",
+                        );
+                    }
+                } catch (error) {
+                    showNotification(
+                        "Error connecting account: " + error.message,
+                        "error",
+                    );
+                }
+            };
+
+            window.disconnectAccount = async function (accountId) {
+                try {
+                    const response = await fetch(
+                        `${API_BASE}/api/accounts/${accountId}/disconnect`,
+                        {
+                            method: "POST",
+                        },
+                    );
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        showNotification(
+                            "Account disconnected successfully!",
+                            "success",
+                        );
+                        await refreshData();
+                    } else {
+                        showNotification(
+                            "Failed to disconnect account: " + data.message,
+                            "error",
+                        );
+                    }
+                } catch (error) {
+                    showNotification(
+                        "Error disconnecting account: " + error.message,
+                        "error",
+                    );
+                }
+            };
+
+            window.deleteAccount = async function (accountId) {
+                console.log("🗑️ deleteAccount called with:", accountId);
+
+                if (!accountId) {
+                    console.error("❌ No account ID provided");
+                    showNotification("No account ID provided", "error");
+                    return;
+                }
+
+                if (
+                    !confirm(
+                        "Are you sure you want to delete this account? This action cannot be undone.",
+                    )
+                ) {
+                    console.log("❌ Delete cancelled by user");
+                    return;
+                }
+
+                try {
+                    console.log("🌐 Sending delete request...");
+                    showNotification("Deleting account...", "info");
+
+                    const response = await fetch(
+                        `${API_BASE}/api/accounts/${accountId}`,
+                        {
+                            method: "DELETE",
+                            headers: {
+                                "Content-Type": "application/json",
+                            },
+                        },
+                    );
+
+                    console.log("📡 Delete response status:", response.status);
+                    const data = await response.json();
+                    console.log("📄 Delete response data:", data);
+
+                    if (response.ok && data.success) {
+                        console.log("✅ Account deleted successfully");
+                        showNotification(
+                            "Account deleted successfully!",
+                            "success",
+                        );
+
+                        // Visual feedback
+                        const accountCard = document.getElementById(
+                            `account-${accountId}`,
+                        );
+                        if (accountCard) {
+                            accountCard.style.opacity = "0.5";
+                            accountCard.style.transform = "scale(0.95)";
+                        }
+
+                        setTimeout(async () => {
+                            await refreshData();
+                        }, 500);
+                    } else {
+                        console.log("❌ Delete failed:", data.message);
+                        showNotification(
+                            "Failed to delete account: " +
+                                (data.message || "Unknown error"),
+                            "error",
+                        );
+                    }
+                } catch (error) {
+                    console.error("💥 Delete error:", error);
+                    showNotification(
+                        "Error deleting account: " + error.message,
+                        "error",
+                    );
+                }
+            };
+
+            window.refreshQR = async function (accountId) {
+                try {
+                    const placeholder = document.getElementById(
+                        `qr-placeholder-${accountId}`,
+                    );
+                    if (placeholder) {
+                        placeholder.innerHTML =
+                            '<i class="fas fa-spinner fa-spin"></i><div>Refreshing QR code...</div>';
+                    }
+
+                    const response = await fetch(
+                        `${API_BASE}/api/accounts/${accountId}/qr`,
+                    );
+                    const data = await response.json();
+
+                    if (data.success && data.data && data.data.qrCode) {
+                        const img = document.getElementById(
+                            `qr-img-${accountId}`,
+                        );
+                        const placeholder = document.getElementById(
+                            `qr-placeholder-${accountId}`,
+                        );
+
+                        if (img && placeholder) {
+                            img.src = data.data.qrCode;
+                            img.style.display = "block";
+                            placeholder.style.display = "none";
+                            showNotification("QR code refreshed!", "success");
+                        }
+                    } else {
+                        if (placeholder) {
+                            placeholder.innerHTML =
+                                "<i class='fas fa-exclamation-triangle'></i><div>QR code not available</div>";
+                        }
+                        showNotification("QR code not available", "error");
+                    }
+                } catch (error) {
+                    const placeholder = document.getElementById(
+                        `qr-placeholder-${accountId}`,
+                    );
+                    if (placeholder) {
+                        placeholder.innerHTML =
+                            "<i class='fas fa-exclamation-triangle'></i><div>Error loading QR code</div>";
+                    }
+                    showNotification(
+                        "Error refreshing QR code: " + error.message,
+                        "error",
+                    );
+                }
+            };
+
+            async function testWebhook() {
+                try {
+                    showNotification("Testing webhook...", "info");
+
+                    const response = await fetch(
+                        `${API_BASE}/api/dashboard/webhook/test`,
+                        {
+                            method: "POST",
+                        },
+                    );
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        showNotification(
+                            `Webhook test successful! (${data.data.responseTime}ms)`,
+                            "success",
+                        );
+                    } else {
+                        showNotification(
+                            "Webhook test failed: " + data.message,
+                            "error",
+                        );
+                    }
+                } catch (error) {
+                    showNotification(
+                        "Error testing webhook: " + error.message,
+                        "error",
+                    );
+                }
+            }
+
+            async function refreshData() {
+                await Promise.all([loadAccounts(), loadStats()]);
+
+                // Load QR codes for accounts that need them
+                for (const account of accounts) {
+                    if (
+                        (account.socketStatus || account.status) ===
+                            "qr_pending" &&
+                        account.hasQrCode
+                    ) {
+                        loadQRCode(account.id);
+                    }
+                }
+            }
+
+            async function loadQRCode(accountId) {
+                try {
+                    console.log("🔄 Loading QR code for:", accountId);
+                    const response = await fetch(
+                        `${API_BASE}/api/accounts/${accountId}/qr`,
+                    );
+                    const data = await response.json();
+                    console.log("📄 QR response:", data);
+
+                    if (data.success && data.data && data.data.qrCode) {
+                        const img = document.getElementById(
+                            `qr-img-${accountId}`,
+                        );
+                        const placeholder = document.getElementById(
+                            `qr-placeholder-${accountId}`,
+                        );
+
+                        console.log(
+                            "🎨 QR elements found - img:",
+                            !!img,
+                            "placeholder:",
+                            !!placeholder,
+                        );
+
+                        if (img && placeholder) {
+                            img.src = data.data.qrCode;
+                            img.style.display = "block";
+                            placeholder.style.display = "none";
+                            console.log("✅ QR code displayed successfully");
+                        }
+                    } else {
+                        console.log("❌ No QR code in response");
+                    }
+                } catch (error) {
+                    console.error("💥 Error loading QR code:", error);
+                }
+            }
+
+            // Test function to verify all functions work
+            function testFunctions() {
+                console.log("🧪 Testing all functions...");
+
+                const tests = [
+                    {
+                        name: "createAccount",
+                        fn: window.createAccount,
+                        type: typeof window.createAccount,
+                    },
+                    {
+                        name: "deleteAccount",
+                        fn: window.deleteAccount,
+                        type: typeof window.deleteAccount,
+                    },
+                    {
+                        name: "connectAccount",
+                        fn: window.connectAccount,
+                        type: typeof window.connectAccount,
+                    },
+                    {
+                        name: "disconnectAccount",
+                        fn: window.disconnectAccount,
+                        type: typeof window.disconnectAccount,
+                    },
+                    {
+                        name: "refreshQR",
+                        fn: window.refreshQR,
+                        type: typeof window.refreshQR,
+                    },
+                ];
+
+                let results = [];
+
+                tests.forEach((test) => {
+                    const isFunction = test.type === "function";
+                    results.push(
+                        `${test.name}: ${isFunction ? "✅" : "❌"} (${test.type})`,
+                    );
+                    console.log(
+                        `${test.name}: ${isFunction ? "✅" : "❌"} (${test.type})`,
+                    );
+                });
+
+                // Test DOM elements
+                const elements = [
+                    {
+                        name: "accountId input",
+                        el: document.getElementById("accountId"),
+                    },
+                    {
+                        name: "accountName input",
+                        el: document.getElementById("accountName"),
+                    },
+                    {
+                        name: "accountsContainer",
+                        el: document.getElementById("accountsContainer"),
+                    },
+                ];
+
+                elements.forEach((element) => {
+                    const exists = !!element.el;
+                    results.push(`${element.name}: ${exists ? "✅" : "❌"}`);
+                    console.log(`${element.name}: ${exists ? "✅" : "❌"}`);
+                });
+
+                // Show results in alert
+                alert("Function Test Results:\n\n" + results.join("\n"));
+
+                showNotification(
+                    "Function test completed - check console for details",
+                    "info",
+                );
+            }
+
+            function showNotification(message, type = "info") {
+                const container = document.getElementById(
+                    "notificationContainer",
+                );
+
+                const notification = document.createElement("div");
+                notification.className = `notification ${type}`;
+
+                const icon =
+                    type === "success"
+                        ? "fas fa-check-circle"
+                        : type === "error"
+                          ? "fas fa-exclamation-circle"
+                          : "fas fa-info-circle";
+
+                notification.innerHTML = `
+                <i class="${icon}"></i>
+                <span>${message}</span>
+            `;
+
+                container.appendChild(notification);
+
+                // Trigger animation
+                setTimeout(() => notification.classList.add("show"), 100);
+
+                // Auto remove after 5 seconds
+                setTimeout(() => {
+                    notification.classList.remove("show");
+                    setTimeout(() => notification.remove(), 300);
+                }, 5000);
+            }
+        </script>
+    </body>
+</html>

@@ -1,6 +1,7 @@
 import axios, { AxiosResponse, AxiosError } from "axios";
 import { Message } from "../models/database";
 import { webhookLogger, logWebhookAttempt } from "../utils/logger";
+import { messageDeduplicator } from "./message-deduplicator";
 
 export interface WebhookPayload {
   from: string;
@@ -8,6 +9,7 @@ export interface WebhookPayload {
   message: string;
   timestamp: string;
   type: string;
+  messageId: string;
 }
 
 export interface WebhookConfig {
@@ -46,33 +48,41 @@ export class WebhookService {
   async sendMessage(
     message: Message,
   ): Promise<{ success: boolean; attempts: number; error?: string }> {
+    // Check for duplicates before processing
+    const messageIdentifier = {
+      messageId: message.message_id,
+      from: message.from,
+      to: message.to,
+      content: message.message,
+      timestamp: parseInt(message.timestamp) * 1000,
+    };
+
+    // Check if webhook already sent for this message
+    if (messageDeduplicator.isWebhookSent(messageIdentifier)) {
+      webhookLogger.info("Webhook already sent for message, skipping:", {
+        messageId: message.message_id,
+        from: message.from,
+        to: message.to,
+      });
+      return { success: true, attempts: 0 };
+    }
+
     const payload: WebhookPayload = {
       from: message.from,
       to: message.to,
       message: message.message,
       timestamp: message.timestamp,
       type: message.type,
+      messageId: message.id,
     };
 
     // Log the message being processed
-    webhookLogger.info("📤 Preparing webhook message:", {
+    webhookLogger.info("Preparing webhook message:", {
       messageId: message.id,
       accountId: message.account_id,
-      messageDirection: message.direction,
-      messageType: message.type,
-      originalMessage: {
-        id: message.id,
-        from: message.from,
-        to: message.to,
-        message: message.message,
-        timestamp: message.timestamp,
-        type: message.type,
-        direction: message.direction,
-        webhook_sent: message.webhook_sent,
-        webhook_attempts: message.webhook_attempts
-      },
-      webhookPayload: payload,
-      webhookPayloadJSON: JSON.stringify(payload, null, 2)
+      from: message.from,
+      to: message.to,
+      type: message.type,
     });
 
     let attempts = 0;
@@ -87,10 +97,11 @@ export class WebhookService {
         logWebhookAttempt(message.id, this.config.url, true);
         webhookLogger.info(`Webhook successful on attempt ${attempts}`, {
           messageId: message.id,
-          accountId: message.account_id,
           statusCode: response.status,
-          responseTime: response.headers["x-response-time"],
         });
+
+        // Mark webhook as sent in deduplicator
+        messageDeduplicator.markWebhookSent(messageIdentifier, attempts);
 
         return { success: true, attempts };
       } catch (error) {
@@ -100,17 +111,12 @@ export class WebhookService {
         logWebhookAttempt(message.id, this.config.url, false, error);
         webhookLogger.warn(`Webhook attempt ${attempts} failed`, {
           messageId: message.id,
-          accountId: message.account_id,
           error: errorMessage,
           willRetry: attempts < this.config.maxRetries,
         });
 
         // Don't retry on certain HTTP status codes
         if (this.shouldNotRetry(error)) {
-          webhookLogger.error(`Webhook failed with non-retryable error`, {
-            messageId: message.id,
-            error: errorMessage,
-          });
           break;
         }
 
@@ -124,9 +130,11 @@ export class WebhookService {
 
     webhookLogger.error(`Webhook failed after ${attempts} attempts`, {
       messageId: message.id,
-      accountId: message.account_id,
       finalError: lastError,
     });
+
+    // Don't mark as sent if failed, but track the attempts
+    messageDeduplicator.markAsCompleted(messageIdentifier, false);
 
     return { success: false, attempts, error: lastError || "Unknown error" };
   }
@@ -144,12 +152,33 @@ export class WebhookService {
       error?: string;
     }>;
   }> {
+    // Filter out messages that already have webhooks sent
+    const filteredMessages = messages.filter((message) => {
+      const messageIdentifier = {
+        messageId: message.message_id,
+        from: message.from,
+        to: message.to,
+        content: message.message,
+        timestamp: parseInt(message.timestamp) * 1000,
+      };
+
+      return !messageDeduplicator.isWebhookSent(messageIdentifier);
+    });
+
     webhookLogger.info(
-      `Processing webhook batch of ${messages.length} messages`,
+      `Processing webhook batch: ${filteredMessages.length}/${messages.length} messages (${messages.length - filteredMessages.length} already sent)`,
     );
 
+    if (filteredMessages.length === 0) {
+      return {
+        successful: 0,
+        failed: 0,
+        results: [],
+      };
+    }
+
     const results = await Promise.all(
-      messages.map(async (message) => {
+      filteredMessages.map(async (message) => {
         const result = await this.sendMessage(message);
         return {
           messageId: message.id,
@@ -163,8 +192,10 @@ export class WebhookService {
 
     webhookLogger.info(`Webhook batch completed`, {
       total: messages.length,
+      processed: filteredMessages.length,
       successful,
       failed,
+      skipped: messages.length - filteredMessages.length,
     });
 
     return { successful, failed, results };
@@ -184,6 +215,7 @@ export class WebhookService {
       message: "Test connection from WhatsApp Server",
       timestamp: Math.floor(Date.now() / 1000).toString(),
       type: "text",
+      messageId: "test_db_" + Date.now(),
     };
 
     const startTime = Date.now();
@@ -235,19 +267,13 @@ export class WebhookService {
   private async makeRequest(payload: WebhookPayload): Promise<AxiosResponse> {
     const requestId = this.generateRequestId();
 
-    // Log detailed request information
-    webhookLogger.info("🚀 Webhook Request Details:", {
+    // Log request information
+    webhookLogger.debug("Webhook request:", {
       requestId,
       url: this.config.url,
-      method: "POST",
-      timeout: this.config.timeout,
-      payload: payload,
-      payloadJSON: JSON.stringify(payload, null, 2),
-      headers: {
-        "Content-Type": "application/json",
-        "User-Agent": "WhatsApp-Server/1.0.0",
-        "X-Request-ID": requestId,
-      }
+      from: payload.from,
+      to: payload.to,
+      type: payload.type,
     });
 
     try {
@@ -262,45 +288,27 @@ export class WebhookService {
       });
 
       // Log successful response
-      webhookLogger.info("✅ Webhook Response Success:", {
+      webhookLogger.debug("Webhook response success:", {
         requestId,
         statusCode: response.status,
-        statusText: response.statusText,
-        responseHeaders: response.headers,
-        responseData: response.data,
-        responseSize: JSON.stringify(response.data).length
       });
 
       return response;
     } catch (error) {
-      // Log detailed error information
+      // Log error information
       if (axios.isAxiosError(error)) {
-        webhookLogger.error("❌ Webhook Request Failed:", {
+        webhookLogger.error("Webhook request failed:", {
           requestId,
           url: this.config.url,
-          payload: payload,
-          payloadJSON: JSON.stringify(payload, null, 2),
-          errorType: "AxiosError",
           errorMessage: error.message,
-          errorCode: error.code,
           responseStatus: error.response?.status,
-          responseStatusText: error.response?.statusText,
           responseData: error.response?.data,
-          responseHeaders: error.response?.headers,
-          requestConfig: {
-            timeout: error.config?.timeout,
-            headers: error.config?.headers,
-            url: error.config?.url,
-            method: error.config?.method
-          }
         });
       } else {
-        webhookLogger.error("❌ Webhook Request Failed (Non-Axios):", {
+        webhookLogger.error("Webhook request failed:", {
           requestId,
           url: this.config.url,
-          payload: payload,
-          payloadJSON: JSON.stringify(payload, null, 2),
-          error: error
+          error: error instanceof Error ? error.message : String(error),
         });
       }
       throw error;
@@ -382,12 +390,20 @@ export class WebhookService {
     timeout: number;
     maxRetries: number;
     retryDelay: number;
+    deduplication: {
+      totalProcessed: number;
+      currentlyProcessing: number;
+      webhooksSent: number;
+      cacheSize: number;
+      contentHashesSize: number;
+    };
   } {
     return {
       url: this.config.url,
       timeout: this.config.timeout,
       maxRetries: this.config.maxRetries,
       retryDelay: this.config.retryDelay,
+      deduplication: messageDeduplicator.getStats(),
     };
   }
 }

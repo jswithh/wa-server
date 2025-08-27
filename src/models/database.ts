@@ -58,9 +58,6 @@ export class DatabaseManager {
       // Create tables
       await this.createTables();
 
-      // Run migrations
-      await this.runMigrations();
-
       logger.info("Database initialized successfully");
     } catch (error) {
       logger.error("Failed to initialize database:", error);
@@ -164,80 +161,7 @@ export class DatabaseManager {
     );
   }
 
-  private async runMigrations(): Promise<void> {
-    if (!this.db) throw new Error("Database not initialized");
 
-    try {
-      // Check if the old column names exist
-      const tableInfo = await this.db.all("PRAGMA table_info(messages)");
-      const hasOldColumns = tableInfo.some(
-        (column: any) =>
-          column.name === "from_number" || column.name === "to_number",
-      );
-
-      if (hasOldColumns) {
-        logger.info(
-          "Running database migration: renaming from_number and to_number columns",
-        );
-
-        // SQLite doesn't support column renaming directly, so we need to recreate the table
-        await this.db.exec("BEGIN TRANSACTION");
-
-        // Create new table with correct column names
-        await this.db.exec(`
-          CREATE TABLE messages_new (
-            id TEXT PRIMARY KEY,
-            account_id TEXT NOT NULL,
-            [from] TEXT NOT NULL,
-            [to] TEXT NOT NULL,
-            message TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            type TEXT NOT NULL DEFAULT 'text',
-            direction TEXT NOT NULL,
-            message_id TEXT NOT NULL,
-            raw_data TEXT,
-            webhook_sent BOOLEAN DEFAULT FALSE,
-            webhook_attempts INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE
-          )
-        `);
-
-        // Copy data from old table to new table
-        await this.db.exec(`
-          INSERT INTO messages_new (
-            id, account_id, [from], [to], message, timestamp,
-            type, direction, message_id, raw_data, webhook_sent, webhook_attempts, created_at
-          )
-          SELECT
-            id, account_id, from_number, to_number, message, timestamp,
-            type, direction, message_id, raw_data, webhook_sent, webhook_attempts, created_at
-          FROM messages
-        `);
-
-        // Drop old table and rename new table
-        await this.db.exec("DROP TABLE messages");
-        await this.db.exec("ALTER TABLE messages_new RENAME TO messages");
-
-        // Recreate indexes
-        await this.db.exec(`
-          CREATE INDEX idx_messages_account_id ON messages(account_id);
-          CREATE INDEX idx_messages_timestamp ON messages(timestamp);
-          CREATE INDEX idx_messages_direction ON messages(direction);
-          CREATE INDEX idx_messages_webhook_sent ON messages(webhook_sent);
-        `);
-
-        await this.db.exec("COMMIT");
-        logger.info("Database migration completed successfully");
-      }
-    } catch (error) {
-      if (this.db) {
-        await this.db.exec("ROLLBACK");
-      }
-      logger.error("Database migration failed:", error);
-      throw error;
-    }
-  }
 
   async getAccount(id: string): Promise<Account | null> {
     if (!this.db) throw new Error("Database not initialized");

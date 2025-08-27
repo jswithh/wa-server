@@ -115,145 +115,22 @@ if (process.env.NODE_ENV !== "production") {
 // Create specific loggers for different components
 export const whatsappLogger = logger.child({ component: "whatsapp" });
 export const webhookLogger = logger.child({ component: "webhook" });
-export const dbLogger = logger.child({ component: "database" });
-export const serverLogger = logger.child({ component: "server" });
 
-// Add comprehensive trace method to child loggers for Baileys compatibility
-(whatsappLogger as any).trace = (message: string, ...args: any[]) => {
-  try {
-    whatsappLogger.debug(`[TRACE] ${message}`, ...args);
-  } catch (error) {
-    console.warn("WhatsApp logger trace failed:", error);
-  }
-};
-(webhookLogger as any).trace = (message: string, ...args: any[]) => {
-  try {
-    webhookLogger.debug(`[TRACE] ${message}`, ...args);
-  } catch (error) {
-    console.warn("Webhook logger trace failed:", error);
-  }
-};
-(dbLogger as any).trace = (message: string, ...args: any[]) => {
-  try {
-    dbLogger.debug(`[TRACE] ${message}`, ...args);
-  } catch (error) {
-    console.warn("DB logger trace failed:", error);
-  }
-};
-(serverLogger as any).trace = (message: string, ...args: any[]) => {
-  try {
-    serverLogger.debug(`[TRACE] ${message}`, ...args);
-  } catch (error) {
-    console.warn("Server logger trace failed:", error);
-  }
-};
-
-// Enhanced Baileys-compatible logger with comprehensive error handling
+// Optimized Baileys-compatible logger (eliminates redundant wrapper functions)
 export const baileysLogger = {
   level: process.env.LOG_LEVEL || "info",
-  error: (obj: unknown, msg?: string) => {
-    try {
-      if (typeof obj === "string") {
-        whatsappLogger.error(obj, msg);
-      } else {
-        whatsappLogger.error(msg || "Error", obj);
-      }
-    } catch (error) {
-      console.error("Baileys logger error:", error);
+  error: whatsappLogger.error.bind(whatsappLogger),
+  warn: whatsappLogger.warn.bind(whatsappLogger),
+  info: whatsappLogger.info.bind(whatsappLogger),
+  debug: whatsappLogger.debug.bind(whatsappLogger),
+  trace: (obj: unknown, msg?: string) => {
+    if (typeof obj === "string") {
+      whatsappLogger.debug(`[TRACE] ${obj}`, msg);
+    } else {
+      whatsappLogger.debug(`[TRACE] ${msg || "Trace"}`, obj);
     }
   },
-  warn: (obj: unknown, msg?: string) => {
-    try {
-      if (typeof obj === "string") {
-        whatsappLogger.warn(obj, msg);
-      } else {
-        whatsappLogger.warn(msg || "Warning", obj);
-      }
-    } catch (error) {
-      console.error("Baileys logger warn error:", error);
-    }
-  },
-  info: (obj: unknown, msg?: string) => {
-    try {
-      if (typeof obj === "string") {
-        whatsappLogger.info(obj, msg);
-      } else {
-        whatsappLogger.info(msg || "Info", obj);
-      }
-    } catch (error) {
-      console.error("Baileys logger info error:", error);
-    }
-  },
-  debug: (obj: unknown, msg?: string) => {
-    try {
-      if (typeof obj === "string") {
-        whatsappLogger.debug(obj, msg);
-      } else {
-        whatsappLogger.debug(msg || "Debug", obj);
-      }
-    } catch (error) {
-      console.error("Baileys logger debug error:", error);
-    }
-  },
-  trace: function (obj: unknown, msg?: string) {
-    // Explicitly handle trace calls to prevent Baileys errors
-    try {
-      if (typeof obj === "string") {
-        whatsappLogger.debug(`[TRACE] ${obj}`, msg);
-      } else {
-        whatsappLogger.debug(`[TRACE] ${msg || "Trace"}`, obj);
-      }
-    } catch (error) {
-      console.warn("Trace logging failed:", error);
-    }
-  },
-  child: (obj: Record<string, unknown>) => {
-    const childLogger = whatsappLogger.child(obj);
-    return {
-      level: process.env.LOG_LEVEL || "info",
-      error: (obj: unknown, msg?: string) => {
-        if (typeof obj === "string") {
-          childLogger.error(obj, msg);
-        } else {
-          childLogger.error(msg || "Error", obj);
-        }
-      },
-      warn: (obj: unknown, msg?: string) => {
-        if (typeof obj === "string") {
-          childLogger.warn(obj, msg);
-        } else {
-          childLogger.warn(msg || "Warning", obj);
-        }
-      },
-      info: (obj: unknown, msg?: string) => {
-        if (typeof obj === "string") {
-          childLogger.info(obj, msg);
-        } else {
-          childLogger.info(msg || "Info", obj);
-        }
-      },
-      debug: (obj: unknown, msg?: string) => {
-        if (typeof obj === "string") {
-          childLogger.debug(obj, msg);
-        } else {
-          childLogger.debug(msg || "Debug", obj);
-        }
-      },
-      trace: function (obj: unknown, msg?: string) {
-        // Explicitly handle trace calls for child loggers
-        try {
-          if (typeof obj === "string") {
-            childLogger.debug(`[TRACE] ${obj}`, msg);
-          } else {
-            childLogger.debug(`[TRACE] ${msg || "Trace"}`, obj);
-          }
-        } catch (error) {
-          console.warn("Child trace logging failed:", error);
-        }
-      },
-      child: (obj: Record<string, unknown>) => baileysLogger.child(obj),
-    };
-  },
+  child: () => baileysLogger,
 };
 
 // Helper function to log WhatsApp events
@@ -280,20 +157,6 @@ export const logWebhookAttempt = (
     webhookLogger.error(`Webhook failed for message ${messageId} to ${url}`, {
       error,
     });
-  }
-};
-
-// Helper function to log database operations
-export const logDatabaseOperation = (
-  operation: string,
-  success: boolean,
-  data?: any,
-  error?: any,
-) => {
-  if (success) {
-    dbLogger.debug(`Database operation: ${operation}`, data);
-  } else {
-    dbLogger.error(`Database operation failed: ${operation}`, { data, error });
   }
 };
 

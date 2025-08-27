@@ -2,11 +2,9 @@ import express, { Request, Response } from "express";
 import { whatsappService } from "../services/whatsapp";
 import { webhookService } from "../services/webhook";
 import { databaseManager } from "../models/database";
-import {
-  createSuccessResponse,
-  createErrorResponse,
-} from "../utils/validation";
-import { serverLogger } from "../utils/logger";
+import { ResponseService } from "../utils/response-service";
+import { getRequestId } from "../middleware/request-logging";
+import { logger } from "../utils/logger";
 
 const router = express.Router();
 
@@ -36,17 +34,22 @@ router.get("/stats", async (req: Request, res: Response) => {
       timestamp: new Date().toISOString(),
     };
 
-    res.json(
-      createSuccessResponse(
-        systemStats,
-        "System statistics retrieved successfully",
-      ),
+    const requestId = getRequestId(req);
+    ResponseService.success(
+      res,
+      systemStats,
+      "System statistics retrieved successfully",
+      requestId ? { requestId } : {},
     );
   } catch (error) {
-    serverLogger.error("Failed to get system stats:", error);
-    res
-      .status(500)
-      .json(createErrorResponse("Failed to retrieve system statistics"));
+    logger.error("Failed to get system stats:", error);
+    const requestId = getRequestId(req);
+    ResponseService.error(
+      res,
+      "Failed to retrieve system statistics",
+      "DASHBOARD_ERROR",
+      requestId ? { requestId } : {},
+    );
   }
 });
 
@@ -85,16 +88,29 @@ router.get("/health", async (req: Request, res: Response) => {
       (status) => status === "healthy",
     );
 
+    const requestId = getRequestId(req);
     if (isHealthy) {
-      res.json(createSuccessResponse(health, "System is healthy"));
+      ResponseService.success(
+        res,
+        health,
+        "System is healthy",
+        requestId ? { requestId } : {},
+      );
     } else {
-      res
-        .status(503)
-        .json(createErrorResponse("System is unhealthy", "UNHEALTHY", health));
+      ResponseService.serviceUnavailable(
+        res,
+        "System is unhealthy",
+        requestId ? { requestId } : {},
+      );
     }
   } catch (error) {
-    serverLogger.error("Health check failed:", error);
-    res.status(503).json(createErrorResponse("Health check failed"));
+    logger.error("Health check failed:", error);
+    const requestId = getRequestId(req);
+    ResponseService.serviceUnavailable(
+      res,
+      "Health check failed",
+      requestId ? { requestId } : {},
+    );
   }
 });
 
@@ -107,26 +123,35 @@ router.post("/webhook/test", async (req: Request, res: Response) => {
     const result = await webhookService.testConnection();
 
     if (result.success) {
-      res.json(
-        createSuccessResponse(
-          {
-            success: true,
-            responseTime: result.responseTime,
-            url: webhookService.getConfig().url,
-          },
-          "Webhook test successful",
-        ),
+      const requestId = getRequestId(req);
+      ResponseService.success(
+        res,
+        {
+          success: true,
+          responseTime: result.responseTime,
+          url: webhookService.getConfig().url,
+        },
+        "Webhook test successful",
+        requestId ? { requestId } : {},
       );
     } else {
-      res.status(400).json(
-        createErrorResponse("Webhook test failed", "WEBHOOK_TEST_FAILED", {
-          error: result.error,
-        }),
+      const requestId = getRequestId(req);
+      ResponseService.error(
+        res,
+        "Webhook test failed",
+        "WEBHOOK_TEST_FAILED",
+        requestId ? { requestId } : {},
       );
     }
   } catch (error) {
-    serverLogger.error("Webhook test failed:", error);
-    res.status(500).json(createErrorResponse("Webhook test failed"));
+    logger.error("Webhook test failed:", error);
+    const requestId = getRequestId(req);
+    ResponseService.error(
+      res,
+      "Webhook test failed",
+      "WEBHOOK_ERROR",
+      requestId ? { requestId } : {},
+    );
   }
 });
 
@@ -138,22 +163,27 @@ router.get("/webhook/config", (req: Request, res: Response) => {
   try {
     const config = webhookService.getConfig();
 
-    res.json(
-      createSuccessResponse(
-        {
-          url: config.url,
-          timeout: config.timeout,
-          maxRetries: config.maxRetries,
-          retryDelay: config.retryDelay,
-        },
-        "Webhook configuration retrieved successfully",
-      ),
+    const requestId = getRequestId(req);
+    ResponseService.success(
+      res,
+      {
+        url: config.url,
+        timeout: config.timeout,
+        maxRetries: config.maxRetries,
+        retryDelay: config.retryDelay,
+      },
+      "Webhook configuration retrieved successfully",
+      requestId ? { requestId } : {},
     );
   } catch (error) {
-    serverLogger.error("Failed to get webhook config:", error);
-    res
-      .status(500)
-      .json(createErrorResponse("Failed to retrieve webhook configuration"));
+    logger.error("Failed to get webhook config:", error);
+    const requestId = getRequestId(req);
+    ResponseService.error(
+      res,
+      "Failed to retrieve webhook configuration",
+      "WEBHOOK_ERROR",
+      requestId ? { requestId } : {},
+    );
   }
 });
 
@@ -173,7 +203,13 @@ router.put("/webhook/config", async (req: Request, res: Response) => {
         new URL(url);
         config.url = url;
       } catch {
-        return res.status(400).json(createErrorResponse("Invalid webhook URL"));
+        const requestId = getRequestId(req);
+        return ResponseService.validationError(
+          res,
+          "Invalid webhook URL",
+          undefined,
+          requestId ? { requestId } : {},
+        );
       }
     }
 
@@ -205,9 +241,13 @@ router.put("/webhook/config", async (req: Request, res: Response) => {
     }
 
     if (Object.keys(config).length === 0) {
-      return res
-        .status(400)
-        .json(createErrorResponse("No valid configuration provided"));
+      const requestId = getRequestId(req);
+      return ResponseService.validationError(
+        res,
+        "No valid configuration provided",
+        undefined,
+        requestId ? { requestId } : {},
+      );
     }
 
     // Update configuration
@@ -217,7 +257,7 @@ router.put("/webhook/config", async (req: Request, res: Response) => {
     if (config.url) {
       const testResult = await webhookService.testConnection();
       if (!testResult.success) {
-        serverLogger.warn(
+        logger.warn(
           "Webhook test failed after configuration update:",
           testResult.error,
         );
@@ -226,22 +266,27 @@ router.put("/webhook/config", async (req: Request, res: Response) => {
 
     const updatedConfig = webhookService.getConfig();
 
-    return res.json(
-      createSuccessResponse(
-        {
-          url: updatedConfig.url,
-          timeout: updatedConfig.timeout,
-          maxRetries: updatedConfig.maxRetries,
-          retryDelay: updatedConfig.retryDelay,
-        },
-        "Webhook configuration updated successfully",
-      ),
+    const requestId = getRequestId(req);
+    return ResponseService.success(
+      res,
+      {
+        url: updatedConfig.url,
+        timeout: updatedConfig.timeout,
+        maxRetries: updatedConfig.maxRetries,
+        retryDelay: updatedConfig.retryDelay,
+      },
+      "Webhook configuration updated successfully",
+      requestId ? { requestId } : {},
     );
   } catch (error) {
-    serverLogger.error("Failed to update webhook config:", error);
-    return res
-      .status(500)
-      .json(createErrorResponse("Failed to update webhook configuration"));
+    logger.error("Failed to update webhook config:", error);
+    const requestId = getRequestId(req);
+    return ResponseService.error(
+      res,
+      "Failed to update webhook configuration",
+      "WEBHOOK_ERROR",
+      requestId ? { requestId } : {},
+    );
   }
 });
 
@@ -268,17 +313,22 @@ router.get("/messages/pending", async (req: Request, res: Response) => {
       summary.byType[msg.type] = (summary.byType[msg.type] || 0) + 1;
     });
 
-    res.json(
-      createSuccessResponse(
-        summary,
-        "Pending webhook messages retrieved successfully",
-      ),
+    const requestId = getRequestId(req);
+    ResponseService.success(
+      res,
+      summary,
+      "Pending webhook messages retrieved successfully",
+      requestId ? { requestId } : {},
     );
   } catch (error) {
-    serverLogger.error("Failed to get pending messages:", error);
-    res
-      .status(500)
-      .json(createErrorResponse("Failed to retrieve pending messages"));
+    logger.error("Failed to get pending messages:", error);
+    const requestId = getRequestId(req);
+    ResponseService.error(
+      res,
+      "Failed to retrieve pending messages",
+      "DASHBOARD_ERROR",
+      requestId ? { requestId } : {},
+    );
   }
 });
 
@@ -291,9 +341,13 @@ router.post("/messages/retry", async (req: Request, res: Response) => {
     const { messageIds } = req.body;
 
     if (!Array.isArray(messageIds) || messageIds.length === 0) {
-      return res
-        .status(400)
-        .json(createErrorResponse("Invalid message IDs provided"));
+      const requestId = getRequestId(req);
+      return ResponseService.validationError(
+        res,
+        "Invalid message IDs provided",
+        undefined,
+        requestId ? { requestId } : {},
+      );
     }
 
     // Get messages to retry
@@ -303,9 +357,12 @@ router.post("/messages/retry", async (req: Request, res: Response) => {
     );
 
     if (messagesToRetry.length === 0) {
-      return res
-        .status(404)
-        .json(createErrorResponse("No eligible messages found for retry"));
+      const requestId = getRequestId(req);
+      return ResponseService.notFound(
+        res,
+        "No eligible messages found for retry",
+        requestId ? { requestId } : {},
+      );
     }
 
     // Reset webhook attempts for retry
@@ -313,20 +370,25 @@ router.post("/messages/retry", async (req: Request, res: Response) => {
       await databaseManager.updateMessageWebhookStatus(message.id, false, 0);
     }
 
-    return res.json(
-      createSuccessResponse(
-        {
-          retried: messagesToRetry.length,
-          messageIds: messagesToRetry.map((m) => m.id),
-        },
-        "Messages queued for retry successfully",
-      ),
+    const requestId = getRequestId(req);
+    return ResponseService.success(
+      res,
+      {
+        retried: messagesToRetry.length,
+        messageIds: messagesToRetry.map((m) => m.id),
+      },
+      "Messages queued for retry successfully",
+      requestId ? { requestId } : {},
     );
   } catch (error) {
-    serverLogger.error("Failed to retry messages:", error);
-    return res
-      .status(500)
-      .json(createErrorResponse("Failed to retry messages"));
+    logger.error("Failed to retry messages:", error);
+    const requestId = getRequestId(req);
+    return ResponseService.error(
+      res,
+      "Failed to retry messages",
+      "RETRY_ERROR",
+      requestId ? { requestId } : {},
+    );
   }
 });
 
@@ -352,20 +414,27 @@ router.get("/logs/recent", (req: Request, res: Response) => {
       },
     ];
 
-    res.json(
-      createSuccessResponse(
-        {
-          logs: mockLogs,
-          total: mockLogs.length,
-          level,
-          limit,
-        },
-        "Recent logs retrieved successfully",
-      ),
+    const requestId = getRequestId(req);
+    ResponseService.success(
+      res,
+      {
+        logs: mockLogs,
+        total: mockLogs.length,
+        level,
+        limit,
+      },
+      "Recent logs retrieved successfully",
+      requestId ? { requestId } : {},
     );
   } catch (error) {
-    serverLogger.error("Failed to get recent logs:", error);
-    res.status(500).json(createErrorResponse("Failed to retrieve recent logs"));
+    logger.error("Failed to get recent messages:", error);
+    const requestId = getRequestId(req);
+    ResponseService.error(
+      res,
+      "Failed to retrieve messages",
+      "DASHBOARD_ERROR",
+      requestId ? { requestId } : {},
+    );
   }
 });
 
@@ -399,17 +468,22 @@ router.get("/performance", (req: Request, res: Response) => {
       timestamp: new Date().toISOString(),
     };
 
-    res.json(
-      createSuccessResponse(
-        performance,
-        "Performance metrics retrieved successfully",
-      ),
+    const requestId = getRequestId(req);
+    ResponseService.success(
+      res,
+      performance,
+      "Performance metrics retrieved successfully",
+      requestId ? { requestId } : {},
     );
   } catch (error) {
-    serverLogger.error("Failed to get performance metrics:", error);
-    res
-      .status(500)
-      .json(createErrorResponse("Failed to retrieve performance metrics"));
+    logger.error("Failed to get performance metrics:", error);
+    const requestId = getRequestId(req);
+    ResponseService.error(
+      res,
+      "Failed to retrieve performance metrics",
+      "DASHBOARD_ERROR",
+      requestId ? { requestId } : {},
+    );
   }
 });
 

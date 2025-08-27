@@ -7,6 +7,7 @@ A robust Express.js application that enables management of multiple WhatsApp acc
 - **Multi-Account Management**: Handle multiple WhatsApp accounts simultaneously
 - **QR Code Generation**: Web-based QR code display for easy account authentication
 - **Message Logging**: Capture all inbound and outbound messages
+- **History Filter System**: Advanced filtering to prevent processing old messages during account connection
 - **Webhook Integration**: Automatically forward messages to external endpoints
 - **SQLite Database**: Persistent storage for accounts, messages, and sessions
 - **REST API**: Complete RESTful API for account and message management
@@ -44,14 +45,30 @@ A robust Express.js application that enables management of multiple WhatsApp acc
    PORT=3000
    WEBHOOK_URL=http://localhost:10022/hra_whatsapp/sub_channel/webhook
    LOG_LEVEL=info
+   
+   # WhatsApp History Filter Settings
+   WA_AUTO_CONNECT_EXISTING=false
+   WA_HISTORY_THRESHOLD_MINUTES=10
+   WA_ENABLE_HISTORY_FILTER=true
+   WA_MAX_TRANSACTION_RETRIES=3
+   WA_TRANSACTION_DELAY_MS=1000
    ```
 
-5. **Build the TypeScript code:**
+5. **Configure History Filter (Optional):**
+   ```bash
+   # Use interactive configuration script
+   ./set-history-filter.sh
+   
+   # Or apply preset configuration
+   ./set-history-filter.sh --preset strict
+   ```
+
+6. **Build the TypeScript code:**
    ```bash
    npm run build
    ```
 
-6. **Start the server:**
+7. **Start the server:**
    ```bash
    # Development mode with auto-reload
    npm run dev
@@ -396,6 +413,16 @@ CREATE TABLE sessions (
 | `DATABASE_PATH` | `./database.sqlite` | SQLite database path |
 | `SESSIONS_PATH` | `./sessions` | WhatsApp sessions directory |
 
+### WhatsApp History Filter Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WA_AUTO_CONNECT_EXISTING` | `false` | Auto-connect existing accounts on server restart |
+| `WA_HISTORY_THRESHOLD_MINUTES` | `10` | Threshold in minutes for filtering old messages |
+| `WA_ENABLE_HISTORY_FILTER` | `true` | Enable/disable history message filtering |
+| `WA_MAX_TRANSACTION_RETRIES` | `3` | Maximum Baileys transaction retries |
+| `WA_TRANSACTION_DELAY_MS` | `1000` | Delay between transaction retries (ms) |
+
 ### Account Status Values
 - `disconnected` - Account is not connected to WhatsApp
 - `connecting` - Account is in the process of connecting
@@ -460,6 +487,12 @@ npm start
 
 # Type checking
 npx tsc --noEmit
+
+# Configure history filter
+./set-history-filter.sh
+
+# Test history filter implementation
+node test-history-filter.js
 ```
 
 ### Code Style
@@ -518,13 +551,66 @@ Returns system health including:
 ### Debug Mode
 Set `LOG_LEVEL=debug` in your `.env` file for detailed logging.
 
+### History Filter Issues
+If messages from history are still being processed:
+
+1. **Check configuration:**
+   ```bash
+   ./set-history-filter.sh --show
+   ```
+
+2. **Apply strict filtering:**
+   ```bash
+   ./set-history-filter.sh --preset strict
+   ```
+
+3. **Test implementation:**
+   ```bash
+   node test-history-filter.js
+   ```
+
+4. **Monitor logs for filter activity:**
+   ```bash
+   tail -f logs/combined.log | grep -i "history\|filter\|old message"
+   ```
+
+## 🧪 Testing History Filter
+
+### Configuration Testing
+```bash
+# Test current configuration
+node test-history-filter.js
+
+# Test with different settings
+WA_HISTORY_THRESHOLD_MINUTES=1 node test-history-filter.js
+```
+
+### Manual Testing
+1. Connect an account with existing chat history
+2. Monitor logs for "Skipping old message" entries
+3. Verify only recent messages are processed
+4. Check database for message count
+
+### Troubleshooting History Filter
+- **Messages still processing**: Check `WA_ENABLE_HISTORY_FILTER=true`
+- **No filtering happening**: Verify timestamp comparison logic
+- **Too many messages filtered**: Increase `WA_HISTORY_THRESHOLD_MINUTES`
+- **Performance issues**: Decrease `WA_MAX_TRANSACTION_RETRIES`
+
+## 📁 Additional Files
+
+- `WHATSAPP_CONFIG.md` - Detailed history filter configuration guide
+- `set-history-filter.sh` - Interactive configuration script
+- `test-history-filter.js` - Implementation testing script
+
 ## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
 4. Add tests if applicable
-5. Submit a pull request
+5. Test history filter if WhatsApp-related changes
+6. Submit a pull request
 
 ## 📄 License
 

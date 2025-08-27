@@ -1,21 +1,17 @@
-import { messageInterceptor } from "./message-interceptor";
-import { messageContentExtractor } from "./message-content-extractor";
+import { LRUCache } from "lru-cache";
+
 import makeWASocket, {
   DisconnectReason,
   ConnectionState,
   WASocket,
   BaileysEventMap,
   AuthenticationState,
-  AuthenticationCreds,
-  SignalDataTypeMap,
   WAMessage,
   WAMessageContent,
   proto,
   useMultiFileAuthState,
   MessageUpsertType,
   WAMessageUpdate,
-  Chat,
-  Contact,
 } from "baileys";
 import { Boom } from "@hapi/boom";
 import QRCode from "qrcode";
@@ -25,21 +21,28 @@ import { EventEmitter } from "events";
 import { databaseManager, Account, Message } from "../models/database";
 import { webhookService } from "./webhook";
 import { messageProcessor } from "./message-processor";
-import { cleanPhoneNumber } from "../utils/phone-utils";
+import { webhookQueue } from "./webhook-queue";
+import { phoneNumberService } from "../utils/phone-service";
+import { appConfig } from "../config";
 import {
   whatsappLogger,
   logWhatsAppEvent,
   baileysLogger,
 } from "../utils/logger";
 import {
-  normalizePhoneNumber,
   sanitizeMessageContent,
   getCurrentTimestamp,
   generateMessageId,
 } from "../utils/validation";
 
-// Global message store for cross-reference
-const messageStore = new Map<string, any>();
+// Global message store for cross-reference with LRU cache to prevent memory leaks
+const messageStore = new LRUCache<string, any>({
+  max: 1000, // Maximum 1000 messages in cache
+  ttl: 1000 * 60 * 30, // 30 minutes TTL
+  allowStale: false,
+  updateAgeOnGet: true,
+  updateAgeOnHas: true,
+});
 
 // Enhanced message interceptor for debugging and protocol capture
 const originalBaileysDebug = baileysLogger.debug;
@@ -47,163 +50,40 @@ const originalBaileysInfo = baileysLogger.info;
 const originalBaileysWarn = baileysLogger.warn;
 
 // Intercept all Baileys logging to capture actual message content
-baileysLogger.debug = (obj: unknown, msg?: string) => {
-  // Gunakan message content extractor untuk menangkap konten asli
-  messageContentExtractor.interceptAllData(obj);
-  captureMessageFromLog(obj, msg, 'debug');
-  originalBaileysDebug(obj, msg);
+(baileysLogger as any).debug = (obj: unknown, msg?: string) => {
+  // Use consolidated message processor for protocol data interception
+  messageProcessor.interceptProtocolData(obj);
+  captureMessageFromLog(obj, msg, "debug");
+  (originalBaileysDebug as any)(obj, msg);
 };
 
-baileysLogger.info = (obj: unknown, msg?: string) => {
-  messageContentExtractor.interceptAllData(obj);
-  captureMessageFromLog(obj, msg, 'info');
-  originalBaileysInfo(obj, msg);
+(baileysLogger as any).info = (obj: unknown, msg?: string) => {
+  messageProcessor.interceptProtocolData(obj);
+  captureMessageFromLog(obj, msg, "info");
+  (originalBaileysInfo as any)(obj, msg);
 };
 
-baileysLogger.warn = (obj: unknown, msg?: string) => {
-  messageContentExtractor.interceptAllData(obj);
-  captureMessageFromLog(obj, msg, 'warn');
-  originalBaileysWarn(obj, msg);
+(baileysLogger as any).warn = (obj: unknown, msg?: string) => {
+  messageProcessor.interceptProtocolData(obj);
+  captureMessageFromLog(obj, msg, "warn");
+  (originalBaileysWarn as any)(obj, msg);
 };
 
+// ❌ DISABLED: Function completely disabled to prevent log-based message processing
+// This function was capturing messages from protocol logs and processing them,
+// which could include history messages during connection setup
 function captureMessageFromLog(obj: unknown, msg?: string, level?: string) {
-  if (typeof obj === "object" && obj !== null) {
-    const msgObj = obj as any;
+  // Function disabled - just log that it was called
+  whatsappLogger.debug(
+    "🚫 captureMessageFromLog DISABLED - preventing log-based processing",
+    {
+      reason: "history_prevention",
+      note: "Log-based message processing has been disabled to prevent history messages",
+    },
+  );
 
-    // Look for raw protocol messages with actual content
-    if (msg && typeof msg === 'string') {
-      // Check for WebSocket messages containing actual text
-      if (msg.includes('recv') || msg.includes('message')) {
-        try {
-          // Try to parse if it's a stringified JSON
-          const parsed = typeof obj === 'string' ? JSON.parse(obj) : obj;
-          if (parsed && parsed.message && parsed.key) {
-            whatsappLogger.info("🎯 Raw message with content found:", {
-              messageId: parsed.key.id,
-              hasMessage: !!parsed.message,
-              content: parsed.message.conversation || parsed.message.extendedTextMessage?.text || 'Other content',
-            });
-
-            // Store and process immediately
-            messageStore.set(parsed.key.id, parsed);
-            setTimeout(async () => {
-              try {
-                await messageProcessor.processIncomingMessage("account_2", parsed, "6285156808928");
-              } catch (error) {
-                whatsappLogger.error("Error processing raw message:", error);
-              }
-            }, 50);
-          }
-        } catch (e) {
-          // Not JSON, continue
-        }
-      }
-    }
-
-    // Enhanced capture for complete message objects
-    if (msgObj.key && msgObj.key.id && msgObj.message && !msgObj.key.fromMe) {
-      whatsappLogger.info("📨 Complete message object found:", {
-        messageId: msgObj.key.id,
-        from: msgObj.key.remoteJid,
-        hasConversation: !!msgObj.message.conversation,
-        hasExtendedText: !!msgObj.message.extendedTextMessage,
-        content: msgObj.message.conversation || msgObj.message.extendedTextMessage?.text || 'Other type',
-      });
-
-      // Store in message store for immediate processing
-      messageStore.set(msgObj.key.id, msgObj);
-
-      // Process immediately
-      setTimeout(async () => {
-        try {
-          await messageProcessor.processIncomingMessage("account_2", msgObj, "6285156808928");
-        } catch (error) {
-          whatsappLogger.error("Error processing complete message:", error);
-        }
-      }, 50);
-    }
-
-    // Capture protocol receipt/ack messages and try to correlate with content
-    if (msgObj.recv && msgObj.recv.tag === "message" && msgObj.recv.attrs) {
-      const attrs = msgObj.recv.attrs;
-      whatsappLogger.info("🎯 Protocol message receipt:", {
-        messageId: attrs.id,
-        from: attrs.from,
-        to: attrs.recipient || attrs.to,
-        type: attrs.type,
-        notify: attrs.notify,
-        allAttrs: JSON.stringify(attrs) // Show all available fields
-      });
-
-      // Look for any message content in the surrounding context
-      const messageKey = attrs.id;
-
-      // Check if we already have content for this message
-      setTimeout(async () => {
-        const existingMessage = messageStore.get(messageKey);
-        if (!existingMessage || !existingMessage.message) {
-          // Wait for actual content - do NOT create placeholder messages
-          whatsappLogger.debug("Protocol message receipt logged, waiting for actual content:", {
-            messageId: messageKey,
-            from: attrs.from,
-            notify: attrs.notify,
-            note: "Will only process when actual message content is available"
-          });
-
-          // Check if content extractor has the actual content
-          const actualContent = messageContentExtractor.getMessageContent(messageKey);
-          if (actualContent) {
-            whatsappLogger.info("Found actual content for protocol message:", {
-              messageId: messageKey,
-              content: actualContent.substring(0, 100),
-              source: "content_extractor"
-            });
-
-            const messageWithContent: any = {
-              key: {
-                id: attrs.id,
-                fromMe: false,
-                remoteJid: attrs.from,
-              },
-              message: {
-                conversation: actualContent
-              },
-              messageTimestamp: parseInt(attrs.t || Math.floor(Date.now() / 1000).toString()),
-            };
-
-            try {
-              await messageProcessor.processIncomingMessage("account_2", messageWithContent, attrs.recipient?.split("@")[0] || "6281316088377");
-            } catch (error) {
-              whatsappLogger.error("Error processing protocol message with content:", error);
-            }
-          }
-          // If no actual content found, skip creating placeholder - let messages.upsert handle it
-        }
-      }, 500);
-    }
-
-    // Look for any object containing text content
-    const objStr = JSON.stringify(msgObj);
-    if (objStr.includes('"conversation"') || objStr.includes('"text"') || objStr.includes('"extendedTextMessage"')) {
-      whatsappLogger.debug("Text content detected in object:", {
-        hasConversation: objStr.includes('"conversation"'),
-        hasText: objStr.includes('"text"'),
-        hasExtended: objStr.includes('"extendedTextMessage"'),
-        sample: objStr.substring(0, 200),
-      });
-
-      // Try to extract and correlate with message IDs
-      try {
-        if (msgObj.conversation && typeof msgObj.conversation === 'string') {
-          whatsappLogger.info("🎯 Found standalone conversation text:", {
-            content: msgObj.conversation.substring(0, 100),
-          });
-        }
-      } catch (e) {
-        // Continue
-      }
-    }
-  }
+  // Do nothing - completely skip all message processing from logs
+  return;
 }
 
 export interface WhatsAppAccount {
@@ -231,7 +111,7 @@ export interface MessageData {
 }
 
 export class WhatsAppService extends EventEmitter {
-  protected accounts: Map<string, WhatsAppAccount> = new Map();
+  protected accounts: LRUCache<string, WhatsAppAccount>;
   private readonly sessionsPath: string;
   private isInitialized: boolean = false;
   private webhookProcessingInterval: NodeJS.Timeout | null = null;
@@ -240,7 +120,20 @@ export class WhatsAppService extends EventEmitter {
   constructor() {
     super();
     this.sessionsPath = path.join(process.cwd(), "sessions");
+
+    this.accounts = new LRUCache({
+      max: 50, // Maximum 50 WhatsApp accounts
+      ttl: 1000 * 60 * 60 * 24, // 24 hours TTL for inactive accounts
+      allowStale: false,
+      updateAgeOnGet: true,
+      updateAgeOnHas: true,
+    });
+
     this.setupEventHandlers();
+    whatsappLogger.info("WhatsApp service initialized with LRU cache", {
+      maxAccounts: 50,
+      accountsTtl: 1000 * 60 * 60 * 24,
+    });
   }
 
   /**
@@ -349,9 +242,9 @@ export class WhatsAppService extends EventEmitter {
         markOnlineOnConnect: true,
         generateHighQualityLinkPreview: true,
         syncFullHistory: false,
-        emitOwnEvents: true,
+        emitOwnEvents: false, // ✅ Disable to reduce event noise
         shouldIgnoreJid: () => false,
-        shouldSyncHistoryMessage: () => true,
+        shouldSyncHistoryMessage: () => false, // ✅ Explicitly disable history sync
         getMessage: async (key) => {
           whatsappLogger.debug(`getMessage called for ${accountId}`, {
             key,
@@ -359,37 +252,51 @@ export class WhatsAppService extends EventEmitter {
             remoteJid: key.remoteJid,
           });
 
-          // Try to get from message store first
+          // ✅ Try to get from message store first (recent messages only)
           const stored = messageStore.get(key.id || "");
           if (stored?.message) {
             whatsappLogger.info(`Retrieved stored message for ${key.id}`, {
               hasConversation: !!stored.message.conversation,
               hasExtended: !!stored.message.extendedTextMessage,
-              content: stored.message.conversation || stored.message.extendedTextMessage?.text || 'Other content',
+              content:
+                stored.message.conversation ||
+                stored.message.extendedTextMessage?.text ||
+                "Other content",
             });
             return stored.message;
           }
 
-          // If not found, try to get from database
+          // ✅ Simplified getMessage - avoid database queries to prevent history reload
+          // Database queries can trigger re-processing of old messages
+          whatsappLogger.debug(
+            `Message ${key.id} not found in memory store, returning empty to prevent history processing`,
+          );
+          return { conversation: "" };
+
+          // ❌ Disabled database query to prevent history message reprocessing
+          /*
           try {
-            const dbMessage = await databaseManager.getDatabase().get(
-              "SELECT raw_data FROM messages WHERE message_id = ?",
-              [key.id]
-            );
+            const dbMessage = await databaseManager
+              .getDatabase()
+              .get("SELECT raw_data FROM messages WHERE message_id = ?", [
+                key.id,
+              ]);
 
             if (dbMessage && dbMessage.raw_data) {
               const parsedMessage = JSON.parse(dbMessage.raw_data);
               if (parsedMessage.message) {
-                whatsappLogger.info(`Retrieved message from database for ${key.id}`);
+                whatsappLogger.info(
+                  `Retrieved message from database for ${key.id}`,
+                );
                 return parsedMessage.message;
               }
             }
           } catch (dbError) {
-            whatsappLogger.debug(`Could not retrieve message from database: ${dbError}`);
+            whatsappLogger.debug(
+              `Could not retrieve message from database: ${dbError}`,
+            );
           }
-
-          whatsappLogger.debug(`No message found for ${key.id}, returning empty conversation`);
-          return { conversation: "" };
+          */
         },
 
         browser: ["Ubuntu", "Chrome", "22.04.4"],
@@ -400,8 +307,8 @@ export class WhatsAppService extends EventEmitter {
         qrTimeout: 60000,
         connectTimeoutMs: 60000,
         transactionOpts: {
-          maxCommitRetries: 10,
-          delayBetweenTriesMs: 3000,
+          maxCommitRetries: appConfig.whatsapp.maxTransactionRetries,
+          delayBetweenTriesMs: appConfig.whatsapp.transactionDelayMs,
         },
       });
 
@@ -419,84 +326,144 @@ export class WhatsAppService extends EventEmitter {
         `[${accountId}] DEBUG: setupSocketEventHandlers call completed`,
       );
 
-      // Add aggressive message capturing - hook into all socket events
+      // ❌ DISABLED: Aggressive message capturing - hook into all socket events
+      // This was the main culprit for processing history messages!
+      // Commenting out to prevent ANY event-based message processing
+      /*
       const originalEmit = socket.ev.emit.bind(socket.ev);
       socket.ev.emit = function (event: string, ...args: any[]) {
         // Capture all events that might contain message data
-        if (event.includes('message') || event.includes('Message') || event === 'messages.upsert') {
-          whatsappLogger.info(`[${accountId}] 🎯 Socket event captured: ${event}`, {
-            argsCount: args.length,
-            hasData: args.length > 0,
-            firstArgType: args[0] ? typeof args[0] : 'none',
-          });
+        if (
+          event.includes("message") ||
+          event.includes("Message") ||
+          event === "messages.upsert"
+        ) {
+          whatsappLogger.info(
+            `[${accountId}] 🎯 Socket event captured: ${event}`,
+            {
+              argsCount: args.length,
+              hasData: args.length > 0,
+              firstArgType: args[0] ? typeof args[0] : "none",
+            },
+          );
 
           // Process message data if available
           args.forEach((arg, index) => {
-            if (arg && typeof arg === 'object') {
+            if (arg && typeof arg === "object") {
               // Check for message arrays
               if (arg.messages && Array.isArray(arg.messages)) {
-                whatsappLogger.info(`[${accountId}] Processing messages from event ${event}:`, {
-                  messageCount: arg.messages.length,
-                });
+                whatsappLogger.info(
+                  `[${accountId}] Processing messages from event ${event}:`,
+                  {
+                    messageCount: arg.messages.length,
+                  },
+                );
 
                 arg.messages.forEach(async (msg: any, msgIndex: number) => {
-                  whatsappLogger.info(`[${accountId}] 🔍 Analyzing message ${msgIndex + 1}:`, {
-                    messageId: msg?.key?.id,
-                    from: msg?.key?.remoteJid,
-                    fromMe: msg?.key?.fromMe,
-                    hasMessage: !!msg?.message,
-                    messageKeys: msg?.message ? Object.keys(msg.message) : [],
-                    fullMessageStructure: JSON.stringify(msg).substring(0, 300),
-                  });
+                  whatsappLogger.info(
+                    `[${accountId}] 🔍 Analyzing message ${msgIndex + 1}:`,
+                    {
+                      messageId: msg?.key?.id,
+                      from: msg?.key?.remoteJid,
+                      fromMe: msg?.key?.fromMe,
+                      hasMessage: !!msg?.message,
+                      messageKeys: msg?.message ? Object.keys(msg.message) : [],
+                      fullMessageStructure: JSON.stringify(msg).substring(
+                        0,
+                        300,
+                      ),
+                    },
+                  );
 
                   if (msg && msg.key && msg.key.id && msg.message) {
                     // Skip status broadcasts but allow both incoming and outgoing messages
                     if (msg.key.remoteJid?.includes("status@broadcast")) {
-                      whatsappLogger.debug(`[${accountId}] Skipping status broadcast: ${msg.key.id}`);
+                      whatsappLogger.debug(
+                        `[${accountId}] Skipping status broadcast: ${msg.key.id}`,
+                      );
                       return;
                     }
 
-                    whatsappLogger.info(`[${accountId}] 🎯 Found actual message in event:`, {
-                      messageId: msg.key.id,
-                      from: msg.key.remoteJid,
-                      fromMe: msg.key.fromMe,
-                      hasConversation: !!msg.message.conversation,
-                      hasExtended: !!msg.message.extendedTextMessage,
-                      content: msg.message.conversation || msg.message.extendedTextMessage?.text || 'Other content type',
-                    });
+                    whatsappLogger.info(
+                      `[${accountId}] 🎯 Found actual message in event:`,
+                      {
+                        messageId: msg.key.id,
+                        from: msg.key.remoteJid,
+                        fromMe: msg.key.fromMe,
+                        hasConversation: !!msg.message.conversation,
+                        hasExtended: !!msg.message.extendedTextMessage,
+                        content:
+                          msg.message.conversation ||
+                          msg.message.extendedTextMessage?.text ||
+                          "Other content type",
+                      },
+                    );
 
                     // Store and process immediately
                     messageStore.set(msg.key.id, msg);
 
                     setTimeout(async () => {
                       try {
-                        const recipientPhone = cleanPhoneNumber(socket.user?.id) || "6285156808928";
-                        await messageProcessor.processIncomingMessage(accountId, msg, recipientPhone);
-                        whatsappLogger.info(`[${accountId}] ✅ Processed message from event: ${msg.key.id}`);
+                        const recipientPhone =
+                          phoneNumberService.clean(socket.user?.id) ||
+                          "6285156808928";
+                        await messageProcessor.processIncomingMessage(
+                          accountId,
+                          msg,
+                          recipientPhone,
+                        );
+                        whatsappLogger.info(
+                          `[${accountId}] ✅ Processed message from event: ${msg.key.id}`,
+                        );
                       } catch (error) {
-                        whatsappLogger.error(`[${accountId}] ❌ Error processing message from event:`, error);
+                        whatsappLogger.error(
+                          `[${accountId}] ❌ Error processing message from event:`,
+                          error,
+                        );
                       }
                     }, 50);
                   }
                 });
               }
               // Check for single message
-              else if (arg.key && arg.key.id && arg.message && !arg.key.fromMe) {
-                whatsappLogger.info(`[${accountId}] 🎯 Found single message in event:`, {
-                  messageId: arg.key.id,
-                  from: arg.key.remoteJid,
-                  content: arg.message.conversation || arg.message.extendedTextMessage?.text || 'Other content type',
-                });
+              else if (
+                arg.key &&
+                arg.key.id &&
+                arg.message &&
+                !arg.key.fromMe
+              ) {
+                whatsappLogger.info(
+                  `[${accountId}] 🎯 Found single message in event:`,
+                  {
+                    messageId: arg.key.id,
+                    from: arg.key.remoteJid,
+                    content:
+                      arg.message.conversation ||
+                      arg.message.extendedTextMessage?.text ||
+                      "Other content type",
+                  },
+                );
 
                 messageStore.set(arg.key.id, arg);
 
                 setTimeout(async () => {
                   try {
-                    const recipientPhone = cleanPhoneNumber(socket.user?.id) || "6285156808928";
-                    await messageProcessor.processIncomingMessage(accountId, arg, recipientPhone);
-                    whatsappLogger.info(`[${accountId}] ✅ Processed single message from event: ${arg.key.id}`);
+                    const recipientPhone =
+                      phoneNumberService.clean(socket.user?.id) ||
+                      "6285156808928";
+                    await messageProcessor.processIncomingMessage(
+                      accountId,
+                      arg,
+                      recipientPhone,
+                    );
+                    whatsappLogger.info(
+                      `[${accountId}] ✅ Processed single message from event: ${arg.key.id}`,
+                    );
                   } catch (error) {
-                    whatsappLogger.error(`[${accountId}] ❌ Error processing single message from event:`, error);
+                    whatsappLogger.error(
+                      `[${accountId}] ❌ Error processing single message from event:`,
+                      error,
+                    );
                   }
                 }, 50);
               }
@@ -507,6 +474,16 @@ export class WhatsAppService extends EventEmitter {
         // Call original emit
         return (originalEmit as any)(event, ...args);
       };
+      */
+
+      // 📝 LOG ONLY: Just log that aggressive capturing is disabled
+      whatsappLogger.info(
+        `[${accountId}] 🚫 Aggressive message capturing DISABLED - preventing history processing`,
+        {
+          reason: "history_prevention",
+          note: "Only regular messages.upsert handler will work for new messages",
+        },
+      );
 
       whatsappLogger.info(
         `Socket created and event handlers attached for ${accountId}`,
@@ -673,7 +650,11 @@ export class WhatsAppService extends EventEmitter {
    * Get all accounts
    */
   getAllAccounts(): WhatsAppAccount[] {
-    return Array.from(this.accounts.values());
+    const accounts: WhatsAppAccount[] = [];
+    this.accounts.forEach((account: WhatsAppAccount) => {
+      accounts.push(account);
+    });
+    return accounts;
   }
 
   /**
@@ -727,81 +708,293 @@ export class WhatsAppService extends EventEmitter {
           remoteJids: messageUpdate.messages.map((m) => m.key.remoteJid),
           hasMessageContent: messageUpdate.messages.map((m) => !!m.message),
           actualContent: messageUpdate.messages.map((m) => {
-            if (m.message?.conversation) return m.message.conversation.substring(0, 50);
-            if (m.message?.extendedTextMessage?.text) return m.message.extendedTextMessage.text.substring(0, 50);
+            if (m.message?.conversation)
+              return m.message.conversation.substring(0, 50);
+            if (m.message?.extendedTextMessage?.text)
+              return m.message.extendedTextMessage.text.substring(0, 50);
             return "No text content";
           }),
         },
       );
 
-      try {
+      // ✅ ZERO TOLERANCE: Skip ALL non-notify messages completely
+      if (messageUpdate.type !== "notify") {
         whatsappLogger.info(
-          `[${accountId}] 🎯 Processing ${messageUpdate.messages.length} messages via upsert event`,
+          `[${accountId}] 🚫 ZERO TOLERANCE: Skipping ALL non-notify messages (type: ${messageUpdate.type}) - preventing any history sync`,
+          {
+            messageCount: messageUpdate.messages.length,
+            type: messageUpdate.type,
+            reason: "zero_tolerance_history_prevention",
+          },
+        );
+        return;
+      }
+
+      // ✅ AGGRESSIVE FILTER: Skip if history filter disabled but messages seem old
+      if (!appConfig.whatsapp.enableHistoryFilter) {
+        const now = Date.now();
+        const hasOldMessages = messageUpdate.messages.some((msg) => {
+          const messageTime = Number(msg.messageTimestamp) * 1000;
+          const ageMinutes = (now - messageTime) / (60 * 1000);
+          return ageMinutes > 2; // Any message older than 2 minutes
+        });
+
+        if (hasOldMessages) {
+          whatsappLogger.info(
+            `[${accountId}] 🚫 ZERO TOLERANCE: Detected old messages even with filter disabled - skipping batch`,
+            {
+              messageCount: messageUpdate.messages.length,
+              reason: "zero_tolerance_old_detection",
+            },
+          );
+          return;
+        }
+      }
+
+      try {
+        // ✅ Setup timestamp filter untuk history prevention (configurable)
+        const now = Date.now();
+        const historyThreshold =
+          now - appConfig.whatsapp.historyThresholdMinutes * 60 * 1000;
+
+        // ✅ Filter pesan berdasarkan timestamp (only if history filter enabled)
+        let messagesToProcess = messageUpdate.messages;
+
+        // ✅ ALWAYS apply filtering regardless of config for ZERO TOLERANCE
+        messagesToProcess = messageUpdate.messages.filter((message) => {
+          // ✅ ZERO TOLERANCE: ALWAYS skip group messages (ANY @g.us JID)
+          if (
+            appConfig.whatsapp.zeroToleranceMode &&
+            message.key.remoteJid?.includes("@g.us")
+          ) {
+            whatsappLogger.info(
+              `[${accountId}] 🚫 ZERO TOLERANCE: Skipping group message: ${message.key.id}`,
+              {
+                groupJid: message.key.remoteJid,
+                messageId: message.key.id,
+                reason: "zero_tolerance_group_block",
+              },
+            );
+            return false;
+          }
+
+          // ✅ ZERO TOLERANCE: ALWAYS skip status broadcasts
+          if (
+            appConfig.whatsapp.zeroToleranceMode &&
+            message.key.remoteJid?.includes("status@broadcast")
+          ) {
+            whatsappLogger.info(
+              `[${accountId}] 🚫 ZERO TOLERANCE: Skipping status broadcast: ${message.key.id}`,
+              {
+                reason: "zero_tolerance_status_block",
+              },
+            );
+            return false;
+          }
+
+          // ✅ ZERO TOLERANCE: ALWAYS skip messages without proper content
+          if (
+            appConfig.whatsapp.zeroToleranceMode &&
+            (!message.message ||
+              (!message.message.conversation &&
+                !message.message.extendedTextMessage?.text &&
+                !message.message.imageMessage &&
+                !message.message.videoMessage &&
+                !message.message.audioMessage &&
+                !message.message.documentMessage))
+          ) {
+            whatsappLogger.info(
+              `[${accountId}] 🚫 ZERO TOLERANCE: Skipping message without recognizable content: ${message.key.id}`,
+              {
+                messageKeys: message.message
+                  ? Object.keys(message.message)
+                  : [],
+                reason: "zero_tolerance_content_block",
+              },
+            );
+            return false;
+          }
+
+          // ✅ ZERO TOLERANCE: Ultra strict timestamp filtering
+          const messageTime = Number(message.messageTimestamp) * 1000;
+          const ageSeconds = (now - messageTime) / 1000;
+          const ageMinutes = ageSeconds / 60;
+
+          // Reject ANY message older than configured threshold (ultra strict)
+          const maxAgeSeconds = appConfig.whatsapp.zeroToleranceMode
+            ? appConfig.whatsapp.zeroToleranceMaxAgeSeconds
+            : 30;
+
+          if (ageSeconds > maxAgeSeconds) {
+            whatsappLogger.info(
+              `[${accountId}] 🚫 ZERO TOLERANCE: Message too old (${ageSeconds.toFixed(1)}s > ${maxAgeSeconds}s): ${message.key.id}`,
+              {
+                messageTime: new Date(messageTime).toISOString(),
+                ageSeconds: ageSeconds.toFixed(1),
+                ageMinutes: ageMinutes.toFixed(1),
+                maxAgeSeconds,
+                zeroToleranceMode: appConfig.whatsapp.zeroToleranceMode,
+                reason: "zero_tolerance_age_block",
+              },
+            );
+            return false;
+          }
+
+          // ✅ ZERO TOLERANCE: Additional checks for any history patterns
+          // Skip if timestamp is exactly on connection time (likely sync)
+          const account = this.accounts.get(accountId);
+          if (
+            appConfig.whatsapp.zeroToleranceMode &&
+            account &&
+            account.status === "connecting"
+          ) {
+            whatsappLogger.info(
+              `[${accountId}] 🚫 ZERO TOLERANCE: Skipping message during connection state: ${message.key.id}`,
+              {
+                accountStatus: account.status,
+                reason: "zero_tolerance_connection_block",
+              },
+            );
+            return false;
+          }
+
+          // ✅ Final validation: Only process if message is TRULY recent and individual
+          whatsappLogger.info(
+            `[${accountId}] ✅ PASSED all zero tolerance filters: ${message.key.id}`,
+            {
+              from: message.key.remoteJid,
+              ageSeconds: ageSeconds.toFixed(1),
+              reason: "zero_tolerance_approved",
+            },
+          );
+          return true;
+        });
+
+        // ✅ ZERO TOLERANCE: Always report filtering results
+        if (messagesToProcess.length === 0) {
+          whatsappLogger.info(
+            `[${accountId}] 🚫 ZERO TOLERANCE: ALL ${messageUpdate.messages.length} messages blocked - NO PROCESSING`,
+            {
+              totalBlocked: messageUpdate.messages.length,
+              reason: "zero_tolerance_complete_block",
+            },
+          );
+          return;
+        }
+
+        const blockedCount =
+          messageUpdate.messages.length - messagesToProcess.length;
+        whatsappLogger.info(
+          `[${accountId}] 🎯 ZERO TOLERANCE RESULT: Processing ${messagesToProcess.length}/${messageUpdate.messages.length} messages (BLOCKED: ${blockedCount})`,
+          {
+            approved: messagesToProcess.length,
+            blocked: blockedCount,
+            total: messageUpdate.messages.length,
+            blockRate: `${((blockedCount / messageUpdate.messages.length) * 100).toFixed(1)}%`,
+          },
         );
 
         // Process each message individually with enhanced error handling
-        for (const message of messageUpdate.messages) {
+        for (const message of messagesToProcess) {
           try {
-            // Skip status broadcasts but allow both incoming and outgoing messages
+            // ✅ Additional safety checks (already filtered above but double-check)
             if (message.key.remoteJid?.includes("status@broadcast")) {
-              whatsappLogger.debug(`[${accountId}] Skipping status broadcast: ${message.key.id}`);
+              whatsappLogger.debug(
+                `[${accountId}] Skipping status broadcast: ${message.key.id}`,
+              );
               continue;
             }
 
-            whatsappLogger.info(`[${accountId}] Processing individual message`, {
-              messageId: message.key.id,
-              from: message.key.remoteJid,
-              fromMe: message.key.fromMe,
-              hasMessage: !!message.message,
-              messageContent: message.message ? Object.keys(message.message) : [],
-              timestamp: message.messageTimestamp,
-              actualText: message.message?.conversation || message.message?.extendedTextMessage?.text || "No text found",
-            });
+            // ✅ ZERO TOLERANCE: Final safety check for groups (should never reach here)
+            if (message.key.remoteJid?.includes("@g.us")) {
+              whatsappLogger.error(
+                `[${accountId}] 🚨 ZERO TOLERANCE BREACH: Group message reached processing stage: ${message.key.id}`,
+                {
+                  groupJid: message.key.remoteJid,
+                  alert: "FILTERING_FAILED",
+                },
+              );
+              continue;
+            }
+
+            whatsappLogger.info(
+              `[${accountId}] Processing individual message`,
+              {
+                messageId: message.key.id,
+                from: message.key.remoteJid,
+                fromMe: message.key.fromMe,
+                hasMessage: !!message.message,
+                messageContent: message.message
+                  ? Object.keys(message.message)
+                  : [],
+                timestamp: message.messageTimestamp,
+                actualText:
+                  message.message?.conversation ||
+                  message.message?.extendedTextMessage?.text ||
+                  "No text found",
+              },
+            );
 
             const account = this.accounts.get(accountId);
-            const recipientPhone = cleanPhoneNumber(account?.socket?.user?.id) || "6285156808928";
+            const recipientPhone =
+              phoneNumberService.clean(account?.socket?.user?.id) ||
+              "6285156808928";
 
             // Store message for later retrieval WITH ACTUAL CONTENT
             if (message.key.id && message.message) {
               messageStore.set(message.key.id, {
                 ...message,
-                actualContent: message.message.conversation || message.message.extendedTextMessage?.text,
+                actualContent:
+                  message.message.conversation ||
+                  message.message.extendedTextMessage?.text,
                 timestamp: Date.now(),
               });
 
-              whatsappLogger.info(`[${accountId}] Stored message with actual content`, {
-                messageId: message.key.id,
-                actualContent: message.message.conversation || message.message.extendedTextMessage?.text || "Other type",
-                storedSuccessfully: true,
-              });
+              whatsappLogger.info(
+                `[${accountId}] Stored message with actual content`,
+                {
+                  messageId: message.key.id,
+                  actualContent:
+                    message.message.conversation ||
+                    message.message.extendedTextMessage?.text ||
+                    "Other type",
+                  storedSuccessfully: true,
+                },
+              );
             }
 
-            // Process with message processor (primary method) - ini akan menggunakan konten asli
-            await messageProcessor.processIncomingMessage(accountId, message, recipientPhone);
-
-            whatsappLogger.info(`[${accountId}] ✅ Successfully processed message: ${message.key.id}`);
-
+            whatsappLogger.info(
+              `[${accountId}] ✅ Stored message for processing: ${message.key.id}`,
+            );
           } catch (messageError) {
-            whatsappLogger.error(`[${accountId}] ❌ Failed to process individual message`, {
-              messageId: message.key.id,
-              error: messageError instanceof Error ? messageError.message : String(messageError),
-              stack: messageError instanceof Error ? messageError.stack : undefined,
-            });
+            whatsappLogger.error(
+              `[${accountId}] ❌ Failed to process individual message`,
+              {
+                messageId: message.key.id,
+                error:
+                  messageError instanceof Error
+                    ? messageError.message
+                    : String(messageError),
+                stack:
+                  messageError instanceof Error
+                    ? messageError.stack
+                    : undefined,
+              },
+            );
           }
         }
 
-        // Also use original handler as backup
+        // Process messages through the main handler
         await this.handleMessagesUpsert(accountId, messageUpdate);
 
-        whatsappLogger.info(`[${accountId}] ✅ All messages processed via upsert event`);
-      } catch (error) {
-        whatsappLogger.error(
-          `[${accountId}] ❌ Message processing failed:`,
-          {
-            error: error instanceof Error ? error.message : String(error),
-            stack: error instanceof Error ? error.stack : undefined,
-          },
+        whatsappLogger.info(
+          `[${accountId}] ✅ All messages processed via upsert event`,
         );
+      } catch (error) {
+        whatsappLogger.error(`[${accountId}] ❌ Message processing failed:`, {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+        });
       }
     });
 
@@ -835,26 +1028,32 @@ export class WhatsAppService extends EventEmitter {
       if (data?.recv && data?.recv.tag === "message" && data?.recv.attrs) {
         const attrs = data.recv.attrs;
 
-        whatsappLogger.info(`[${accountId}] 🎯 ACK for incoming message detected`, {
-          messageId: attrs.id,
-          from: attrs.from,
-          recipient: attrs.recipient,
-          type: attrs.type,
-          notify: attrs.notify,
-          timestamp: attrs.t,
-        });
+        whatsappLogger.info(
+          `[${accountId}] 🎯 ACK for incoming message detected`,
+          {
+            messageId: attrs.id,
+            from: attrs.from,
+            recipient: attrs.recipient,
+            type: attrs.type,
+            notify: attrs.notify,
+            timestamp: attrs.t,
+          },
+        );
 
         // Process this as a message if we haven't seen it before AND we have actual content
         if (!this.processedMessages.has(attrs.id)) {
           // Check if we have actual content for this message
-          const actualContent = messageContentExtractor.getMessageContent(attrs.id);
+          const actualContent = messageProcessor.getCachedContent(attrs.id);
 
           if (actualContent) {
-            whatsappLogger.info(`[${accountId}] 🎯 ACK with actual content found:`, {
-              messageId: attrs.id,
-              content: actualContent.substring(0, 100),
-              from: attrs.from,
-            });
+            whatsappLogger.info(
+              `[${accountId}] 🎯 ACK with actual content found:`,
+              {
+                messageId: attrs.id,
+                content: actualContent.substring(0, 100),
+                from: attrs.from,
+              },
+            );
 
             try {
               const waMessage: any = {
@@ -864,31 +1063,48 @@ export class WhatsAppService extends EventEmitter {
                   remoteJid: attrs.from,
                 },
                 message: {
-                  conversation: actualContent
+                  conversation: actualContent,
                 },
-                messageTimestamp: parseInt(attrs.t || Math.floor(Date.now() / 1000).toString()),
+                messageTimestamp: parseInt(
+                  attrs.t || Math.floor(Date.now() / 1000).toString(),
+                ),
               };
 
-              const recipientPhone = attrs.recipient?.split("@")[0] || "6281316088377";
+              const recipientPhone =
+                attrs.recipient?.split("@")[0] || "6281316088377";
 
               setTimeout(async () => {
                 try {
-                  await messageProcessor.processIncomingMessage(accountId, waMessage, recipientPhone);
-                  whatsappLogger.info(`[${accountId}] ✅ Processed ACK message with actual content: ${attrs.id}`);
+                  await messageProcessor.processIncomingMessage(
+                    accountId,
+                    waMessage,
+                    recipientPhone,
+                  );
+                  whatsappLogger.info(
+                    `[${accountId}] ✅ Processed ACK message with actual content: ${attrs.id}`,
+                  );
                 } catch (error) {
-                  whatsappLogger.error(`[${accountId}] ❌ Error processing ACK message:`, error);
+                  whatsappLogger.error(
+                    `[${accountId}] ❌ Error processing ACK message:`,
+                    error,
+                  );
                 }
               }, 200);
-
             } catch (error) {
-              whatsappLogger.error(`[${accountId}] Error creating message from ACK:`, error);
+              whatsappLogger.error(
+                `[${accountId}] Error creating message from ACK:`,
+                error,
+              );
             }
           } else {
-            whatsappLogger.debug(`[${accountId}] ACK received but no actual content available yet for message: ${attrs.id}`, {
-              from: attrs.from,
-              notify: attrs.notify,
-              note: "Waiting for actual content via messages.upsert event"
-            });
+            whatsappLogger.debug(
+              `[${accountId}] ACK received but no actual content available yet for message: ${attrs.id}`,
+              {
+                from: attrs.from,
+                notify: attrs.notify,
+                note: "Waiting for actual content via messages.upsert event",
+              },
+            );
           }
         }
       }
@@ -945,7 +1161,10 @@ export class WhatsAppService extends EventEmitter {
       });
     });
 
-    // Capture messages from history sync
+    // ❌ DISABLED: Capture messages from history sync
+    // This handler was disabled to prevent processing old history messages
+    // that get saved to database when device connects
+    /*
     socket.ev.on("messaging-history.set", async (historySet) => {
       whatsappLogger.info(`[${accountId}] messaging-history.set event`, {
         messageCount: historySet.messages?.length || 0,
@@ -953,41 +1172,79 @@ export class WhatsAppService extends EventEmitter {
       });
 
       if (historySet.messages && historySet.messages.length > 0) {
-        whatsappLogger.info(`[${accountId}] Processing ${historySet.messages.length} history messages`);
+        whatsappLogger.info(
+          `[${accountId}] Processing ${historySet.messages.length} history messages`,
+        );
 
         // Process each history message individually
         for (const historyMessage of historySet.messages) {
-          if (historyMessage.message && !historyMessage.key.fromMe && !historyMessage.key.remoteJid?.includes("status@broadcast")) {
-            const recipientPhone = cleanPhoneNumber(this.accounts.get(accountId)?.socket?.user?.id) || "6285156808928";
+          if (
+            historyMessage.message &&
+            !historyMessage.key.fromMe &&
+            !historyMessage.key.remoteJid?.includes("status@broadcast")
+          ) {
+            const recipientPhone =
+              phoneNumberService.clean(
+                this.accounts.get(accountId)?.socket?.user?.id,
+              ) || "6285156808928";
 
-            whatsappLogger.info(`[${accountId}] Processing history message with content:`, {
-              messageId: historyMessage.key.id,
-              from: historyMessage.key.remoteJid,
-              messageTypes: Object.keys(historyMessage.message),
-            });
+            whatsappLogger.info(
+              `[${accountId}] Processing history message with content:`,
+              {
+                messageId: historyMessage.key.id,
+                from: historyMessage.key.remoteJid,
+                messageTypes: Object.keys(historyMessage.message),
+              },
+            );
 
             try {
-              await messageProcessor.processIncomingMessage(accountId, historyMessage, recipientPhone);
+              await messageProcessor.processIncomingMessage(
+                accountId,
+                historyMessage,
+                recipientPhone,
+              );
             } catch (error) {
-              whatsappLogger.error(`[${accountId}] Error processing history message:`, error);
+              whatsappLogger.error(
+                `[${accountId}] Error processing history message:`,
+                error,
+              );
             }
           }
         }
       }
     });
+    */
+
+    // 📝 LOG ONLY: Just log history events without processing messages
+    socket.ev.on("messaging-history.set", async (historySet) => {
+      whatsappLogger.info(
+        `[${accountId}] 🚫 messaging-history.set event IGNORED (${historySet.messages?.length || 0} messages)`,
+        {
+          messageCount: historySet.messages?.length || 0,
+          isLatest: historySet.isLatest,
+          reason: "history_processing_disabled",
+        },
+      );
+    });
 
     // Monitor creds update for session changes
     socket.ev.on("creds.update", async () => {
-      whatsappLogger.debug(`[${accountId}] Credentials updated - session state changed`);
+      whatsappLogger.debug(
+        `[${accountId}] Credentials updated - session state changed`,
+      );
     });
 
     // Add more comprehensive message monitoring
     socket.ev.on("blocklist.set", async (blocklist) => {
-      whatsappLogger.debug(`[${accountId}] Blocklist updated`, { count: blocklist.blocklist?.length || 0 });
+      whatsappLogger.debug(`[${accountId}] Blocklist updated`, {
+        count: blocklist.blocklist?.length || 0,
+      });
     });
 
     socket.ev.on("groups.update", async (groups) => {
-      whatsappLogger.debug(`[${accountId}] Groups updated`, { count: groups.length });
+      whatsappLogger.debug(`[${accountId}] Groups updated`, {
+        count: groups.length,
+      });
     });
 
     // Alternative message capture for Baileys
@@ -1028,7 +1285,9 @@ export class WhatsAppService extends EventEmitter {
       `[${accountId}] 🔍 Setting up comprehensive message monitoring`,
     );
 
-    // Monitor all possible message-related events
+    // ❌ DISABLED: Monitor all possible message-related events
+    // This handler was disabled to prevent processing history messages
+    /*
     socket.ev.on("messages.set" as any, async (data: any) => {
       whatsappLogger.info(`[${accountId}] 📊 messages.set event`, {
         messageCount: data.messages?.length || 0,
@@ -1050,8 +1309,23 @@ export class WhatsAppService extends EventEmitter {
         });
       }
     });
+    */
 
-    // Monitor for any missed message events
+    // 📝 LOG ONLY: Just log messages.set events without processing
+    socket.ev.on("messages.set" as any, async (data: any) => {
+      whatsappLogger.info(
+        `[${accountId}] 🚫 messages.set event IGNORED (${data.messages?.length || 0} messages)`,
+        {
+          messageCount: data.messages?.length || 0,
+          isLatest: data.isLatest,
+          reason: "history_processing_disabled",
+        },
+      );
+    });
+
+    // ❌ DISABLED: Monitor for any missed message events
+    // This handler was disabled to prevent processing individual messages that could include history
+    /*
     socket.ev.on("message" as any, async (message: any) => {
       whatsappLogger.info(
         `[${accountId}] 📨 Individual message event detected`,
@@ -1071,6 +1345,21 @@ export class WhatsAppService extends EventEmitter {
         });
       }
     });
+    */
+
+    // 📝 LOG ONLY: Just log individual message events without processing
+    socket.ev.on("message" as any, async (message: any) => {
+      whatsappLogger.info(
+        `[${accountId}] 🚫 Individual message event IGNORED`,
+        {
+          hasKey: !!message?.key,
+          messageId: message?.key?.id,
+          fromMe: message?.key?.fromMe,
+          remoteJid: message?.key?.remoteJid,
+          reason: "history_prevention",
+        },
+      );
+    });
 
     // Monitor for baileys internal events - enhanced for better message capture
     socket.ev.on("CB:notification" as any, (data: any) => {
@@ -1080,75 +1369,23 @@ export class WhatsAppService extends EventEmitter {
       });
     });
 
+    // ❌ DISABLED: CB:message event handler that processes messages
+    // This handler was disabled to prevent processing messages that could include history
+    /*
     socket.ev.on("CB:message" as any, async (data: any) => {
-      whatsappLogger.info(`[${accountId}] 🚨 CB:message event detected`, {
+      // ... original handler code disabled ...
+    });
+    */
+
+    // 📝 LOG ONLY: Just log CB:message events without processing
+    socket.ev.on("CB:message" as any, async (data: any) => {
+      whatsappLogger.info(`[${accountId}] 🚫 CB:message event IGNORED`, {
         hasAttrs: !!data?.attrs,
         messageId: data?.attrs?.id,
         from: data?.attrs?.from,
         type: data?.attrs?.type,
-        hasContent: !!data?.content,
-        fullData: JSON.stringify(data).substring(0, 500),
+        reason: "history_prevention",
       });
-
-      // Enhanced CB:message processing for actual content
-      if (data?.attrs?.id && data?.attrs?.from && !data.attrs.from.includes("status@broadcast")) {
-        // Try to get the actual message content from the socket's message store
-        const messageId = data.attrs.id;
-        const storedMessage = messageStore.get(messageId);
-
-        if (storedMessage && storedMessage.message) {
-          whatsappLogger.info(`[${accountId}] Found stored message content for CB:message`);
-          const recipientPhone = cleanPhoneNumber(this.accounts.get(accountId)?.socket?.user?.id) || "6285156808928";
-
-          try {
-            await messageProcessor.processIncomingMessage(accountId, storedMessage, recipientPhone);
-          } catch (error) {
-            whatsappLogger.error(`[${accountId}] Error processing CB:message with stored content:`, error);
-          }
-        } else {
-          // Create a message from the CB:message data itself
-          whatsappLogger.warn(`[${accountId}] CB:message has no stored content, checking for actual content`);
-
-          try {
-            // Check if we have actual content from the enhanced interceptor
-            const storedInfo = messageStore.get(messageId);
-            let messageContent = "Message received";
-
-            if (storedInfo?.actualContent) {
-              messageContent = storedInfo.actualContent;
-              whatsappLogger.info(`[${accountId}] Found actual content from interceptor: ${messageContent.substring(0, 50)}`);
-            } else {
-              messageContent = `Message from ${data.attrs.notify || "Unknown"} at ${new Date().toLocaleTimeString()}`;
-            }
-
-            const fakeMessage: any = {
-              key: {
-                id: data.attrs.id,
-                fromMe: false,
-                remoteJid: data.attrs.from,
-              },
-              message: {
-                conversation: messageContent
-              },
-              messageTimestamp: parseInt(data.attrs.t || Math.floor(Date.now() / 1000).toString()),
-            };
-
-            const recipientPhone = cleanPhoneNumber(this.accounts.get(accountId)?.socket?.user?.id) || "6285156808928";
-
-            whatsappLogger.info(`[${accountId}] Processing CB:message with extracted content`, {
-              messageId: fakeMessage.key.id,
-              from: fakeMessage.key.remoteJid,
-              content: messageContent.substring(0, 100),
-              hasActualContent: !!storedInfo?.actualContent,
-            });
-
-            await messageProcessor.processIncomingMessage(accountId, fakeMessage, recipientPhone);
-
-          } catch (error) {
-            whatsappLogger.error(`[${accountId}] Error processing CB:message as fake message:`, error);
-          }
-        }
-      }
     });
 
     // Add more internal event listeners for comprehensive capture
@@ -1170,12 +1407,19 @@ export class WhatsAppService extends EventEmitter {
       });
 
       // Try to process receipt as a message indicator
-      if (data?.attrs?.id && data?.attrs?.from && data?.attrs?.type === "sender") {
-        whatsappLogger.info(`[${accountId}] 📨 Processing receipt as message indicator`, {
-          messageId: data.attrs.id,
-          from: data.attrs.from,
-          recipient: data.attrs.recipient,
-        });
+      if (
+        data?.attrs?.id &&
+        data?.attrs?.from &&
+        data?.attrs?.type === "sender"
+      ) {
+        whatsappLogger.info(
+          `[${accountId}] 📨 Processing receipt as message indicator`,
+          {
+            messageId: data.attrs.id,
+            from: data.attrs.from,
+            recipient: data.attrs.recipient,
+          },
+        );
 
         // Create a placeholder message from receipt data
         try {
@@ -1186,25 +1430,39 @@ export class WhatsAppService extends EventEmitter {
               remoteJid: data.attrs.from,
             },
             message: {
-              conversation: `Message received via receipt (ID: ${data.attrs.id})`
+              conversation: `Message received via receipt (ID: ${data.attrs.id})`,
             },
             messageTimestamp: Math.floor(Date.now() / 1000),
           };
 
-          const recipientPhone = cleanPhoneNumber(this.accounts.get(accountId)?.socket?.user?.id) || "6285156808928";
+          const recipientPhone =
+            phoneNumberService.clean(
+              this.accounts.get(accountId)?.socket?.user?.id,
+            ) || "6285156808928";
 
           // Process with a small delay to allow proper message to arrive first
           setTimeout(async () => {
             try {
-              await messageProcessor.processIncomingMessage(accountId, fakeMessage, recipientPhone);
-              whatsappLogger.info(`[${accountId}] ✅ Processed receipt as message`);
+              await messageProcessor.processIncomingMessage(
+                accountId,
+                fakeMessage,
+                recipientPhone,
+              );
+              whatsappLogger.info(
+                `[${accountId}] ✅ Processed receipt as message`,
+              );
             } catch (error) {
-              whatsappLogger.error(`[${accountId}] ❌ Error processing receipt as message:`, error);
+              whatsappLogger.error(
+                `[${accountId}] ❌ Error processing receipt as message:`,
+                error,
+              );
             }
           }, 500);
-
         } catch (error) {
-          whatsappLogger.error(`[${accountId}] Error creating message from receipt:`, error);
+          whatsappLogger.error(
+            `[${accountId}] Error creating message from receipt:`,
+            error,
+          );
         }
       }
     });
@@ -1255,7 +1513,9 @@ export class WhatsAppService extends EventEmitter {
       }
     }, 1000);
 
-    // Monitor all events with onAny if available
+    // ❌ DISABLED: Monitor all events with onAny - disabled to prevent history processing
+    // This onAny monitor was capturing ALL events including history-related ones
+    /*
     if (typeof (socket.ev as any).onAny === "function") {
       (socket.ev as any).onAny((eventName: string, ...args: any[]) => {
         if (eventName.includes("message") || eventName.includes("upsert")) {
@@ -1277,6 +1537,16 @@ export class WhatsAppService extends EventEmitter {
         `[${accountId}] ⚠️ onAny method not available on event emitter`,
       );
     }
+    */
+
+    // 📝 LOG ONLY: Just log that onAny monitoring is disabled
+    whatsappLogger.info(
+      `[${accountId}] 🚫 onAny event monitoring DISABLED - preventing history capture`,
+      {
+        reason: "history_prevention",
+        note: "All-event monitoring disabled to prevent processing history messages",
+      },
+    );
 
     // Final debug message
     whatsappLogger.debug(
@@ -1323,8 +1593,9 @@ export class WhatsAppService extends EventEmitter {
       // Get phone number from socket
       const phoneNumber = account.socket?.user?.id?.split(":")[0];
       if (phoneNumber) {
-        account.phoneNumber = normalizePhoneNumber(phoneNumber);
-        messageInterceptor.registerAccount(accountId, account.phoneNumber);
+        account.phoneNumber = phoneNumberService.normalize(phoneNumber);
+        // Account registration now handled by consolidated message processor
+        // messageInterceptor.registerAccount(accountId, account.phoneNumber);
         await databaseManager.updateAccountStatus(
           accountId,
           "connected",
@@ -1342,10 +1613,17 @@ export class WhatsAppService extends EventEmitter {
         phoneNumber: account.phoneNumber,
       });
 
-      // Process any messages that might have been missed during connection
+      // ❌ DISABLED: Process any messages that might have been missed during connection
+      // This was disabled to prevent history sync that saves old messages to database
+      /*
       setTimeout(async () => {
         await this.processOfflineMessages(accountId);
       }, 2000);
+      */
+
+      whatsappLogger.info(
+        `🚫 processOfflineMessages call DISABLED for ${accountId} - preventing history sync on connection`,
+      );
     }
 
     if (connection === "close") {
@@ -1503,10 +1781,22 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Simple check to avoid duplicate processing
+   * Simple check to avoid duplicate processing using LRU cache
    */
-  private processedMessages = new Set<string>();
-  private processingMessages = new Map<string, Promise<void>>();
+  private processedMessages = new LRUCache<string, boolean>({
+    max: 1000,
+    ttl: 1000 * 60 * 60, // 1 hour TTL
+    allowStale: false,
+    updateAgeOnGet: true,
+    updateAgeOnHas: true,
+  });
+  private processingMessages = new LRUCache<string, Promise<void>>({
+    max: 500,
+    ttl: 1000 * 60 * 10, // 10 minutes TTL
+    allowStale: false,
+    updateAgeOnGet: true,
+    updateAgeOnHas: true,
+  });
 
   private isMessageProcessed(messageId: string | undefined): boolean {
     if (!messageId) return false;
@@ -1518,13 +1808,8 @@ export class WhatsAppService extends EventEmitter {
 
   private markMessageAsProcessed(messageId: string | undefined): void {
     if (messageId) {
-      this.processedMessages.add(messageId);
-      // Clean up old entries to prevent memory leak
-      if (this.processedMessages.size > 1000) {
-        const entries = Array.from(this.processedMessages);
-        this.processedMessages.clear();
-        entries.slice(-500).forEach((id) => this.processedMessages.add(id));
-      }
+      this.processedMessages.set(messageId, true);
+      // LRU cache handles cleanup automatically, no manual cleanup needed
     }
   }
 
@@ -1547,164 +1832,64 @@ export class WhatsAppService extends EventEmitter {
     accountId: string,
     message: WAMessage,
   ): Promise<void> {
-    whatsappLogger.info(`[${accountId}] 🔄 Original processIncomingMessage called:`, {
-      messageId: message.key.id,
-      from: message.key.remoteJid,
-      hasMessage: !!message.message,
-    });
+    whatsappLogger.info(
+      `[${accountId}] 🔄 Original processIncomingMessage called:`,
+      {
+        messageId: message.key.id,
+        from: message.key.remoteJid,
+        hasMessage: !!message.message,
+      },
+    );
 
-    // Also process with new message processor
+    // Use message processor to handle all processing (database saving, webhook queue, etc.)
     if (!message.key.fromMe && message.message) {
       const account = this.accounts.get(accountId);
-      const recipientPhone = cleanPhoneNumber(account?.socket?.user?.id) || "6285156808928";
+      const recipientPhone =
+        phoneNumberService.clean(account?.socket?.user?.id) || "6285156808928";
 
       try {
-        await messageProcessor.processIncomingMessage(accountId, message, recipientPhone);
-        whatsappLogger.info(`[${accountId}] ✅ Message processor handled message successfully`);
-      } catch (error) {
-        whatsappLogger.error(`[${accountId}] ❌ Message processor failed:`, error);
-      }
-    }
-    const messageId = message.key.id;
+        await messageProcessor.processIncomingMessage(
+          accountId,
+          message,
+          recipientPhone,
+        );
+        whatsappLogger.info(
+          `[${accountId}] ✅ Message processor handled message successfully`,
+        );
 
-    whatsappLogger.info(`[${accountId}] 🔄 PROCESSING INCOMING MESSAGE START`, {
-      messageId,
-      remoteJid: message.key.remoteJid,
-      hasMessage: !!message.message,
-      messageTimestamp: message.messageTimestamp,
-    });
+        // Mark as processed
+        this.markMessageAsProcessed(message.key.id || "");
 
-    // Skip if already processed
-    if (this.isMessageProcessed(messageId || undefined)) {
-      whatsappLogger.info(`[${accountId}] ⏭️ Message already processed`, {
-        messageId,
-      });
-      return;
-    }
-
-    // Check for decryption errors or corrupted messages
-    if (!message.message && !message.messageStubType) {
-      whatsappLogger.warn(
-        `[${accountId}] ⚠️ Message has no content - possible decryption failure`,
-        {
-          messageId,
-          remoteJid: message.key.remoteJid,
-          participant: message.key.participant,
-          messageTimestamp: message.messageTimestamp,
-        },
-      );
-      return;
-    }
-
-    whatsappLogger.info(`[${accountId}] 🔍 Extracting message data`, {
-      messageId,
-      remoteJid: message.key.remoteJid,
-      hasMessage: !!message.message,
-      messageTimestamp: message.messageTimestamp,
-      messageContent: message.message ? Object.keys(message.message) : [],
-    });
-
-    const messageData = this.extractMessageData(accountId, message, "inbound");
-    if (!messageData) {
-      whatsappLogger.error(`[${accountId}] ❌ FAILED TO EXTRACT MESSAGE DATA`, {
-        messageId,
-        remoteJid: message.key.remoteJid,
-        messageContent: message.message,
-        messageKeys: message.message ? Object.keys(message.message) : [],
-        possibleDecryptionIssue: !message.message && !message.messageStubType,
-        fullMessage: JSON.stringify(message, null, 2).substring(0, 1000),
-      });
-      return;
-    }
-
-    whatsappLogger.info(`[${accountId}] ✅ MESSAGE DATA EXTRACTED`, {
-      messageId: messageData.messageId,
-      from: messageData.from,
-      to: messageData.to,
-      type: messageData.type,
-      direction: messageData.direction,
-      timestamp: messageData.timestamp,
-      messageLength: messageData.message.length,
-    });
-
-    // Mark as processed before saving
-    this.markMessageAsProcessed(messageId || undefined);
-
-    whatsappLogger.info(`[${accountId}] 💾 SAVING MESSAGE TO DATABASE`, {
-      messageId: messageData.messageId,
-      from: messageData.from,
-      to: messageData.to,
-      type: messageData.type,
-      dbId: messageData.id,
-      message:
-        messageData.message.substring(0, 100) +
-        (messageData.message.length > 100 ? "..." : ""),
-    });
-
-    try {
-      // Save to database
-      await databaseManager.saveMessage({
-        id: messageData.id,
-        account_id: messageData.accountId,
-        from: messageData.from,
-        to: messageData.to,
-        message: messageData.message,
-        timestamp: messageData.timestamp,
-        type: messageData.type,
-        direction: messageData.direction,
-        message_id: messageData.messageId,
-        raw_data: messageData.rawData,
-        webhook_sent: false,
-        webhook_attempts: 0,
-      });
-
-      whatsappLogger.info(
-        `[${accountId}] ✅ MESSAGE SAVED TO DATABASE SUCCESSFULLY`,
-        {
-          messageId: messageData.messageId,
-          dbId: messageData.id,
-          from: messageData.from,
-          to: messageData.to,
-          type: messageData.type,
-        },
-      );
-
-      logWhatsAppEvent(accountId, "Incoming message received", {
-        from: messageData.from,
-        type: messageData.type,
-        messageId: messageData.messageId,
-      });
-
-      this.emit("message-received", messageData);
-
-      whatsappLogger.info(`[${accountId}] 🚀 TRIGGERING WEBHOOK PROCESSING`, {
-        messageId: messageData.messageId,
-      });
-
-      // Trigger immediate webhook processing for new messages
-      setTimeout(async () => {
-        try {
-          await this.triggerWebhookProcessing();
-        } catch (error) {
-          whatsappLogger.error("Error in immediate webhook trigger:", error);
-        }
-      }, 100);
-    } catch (error) {
-      whatsappLogger.error(
-        `[${accountId}] ❌ FAILED TO SAVE MESSAGE TO DATABASE`,
-        {
-          error: error instanceof Error ? error.message : String(error),
-          stack: error instanceof Error ? error.stack : undefined,
-          messageData: {
-            id: messageData.id,
-            messageId: messageData.messageId,
+        // Emit event for other parts of the system
+        const messageData = this.extractMessageData(
+          accountId,
+          message,
+          "inbound",
+        );
+        if (messageData) {
+          logWhatsAppEvent(accountId, "Incoming message received", {
             from: messageData.from,
-            to: messageData.to,
             type: messageData.type,
-          },
+            messageId: messageData.messageId,
+          });
+          this.emit("message-received", messageData);
+        }
+      } catch (error) {
+        whatsappLogger.error(
+          `[${accountId}] ❌ Message processor failed:`,
+          error,
+        );
+        throw error;
+      }
+    } else {
+      whatsappLogger.info(
+        `[${accountId}] ⏭️ Skipping message - fromMe or no content`,
+        {
+          messageId: message.key.id,
+          fromMe: message.key.fromMe,
+          hasMessage: !!message.message,
         },
       );
-      throw error;
     }
   }
 
@@ -1934,12 +2119,12 @@ export class WhatsAppService extends EventEmitter {
 
       const from =
         direction === "inbound"
-          ? normalizePhoneNumber(fromNumber)
-          : normalizePhoneNumber(toNumber);
+          ? phoneNumberService.normalize(fromNumber)
+          : phoneNumberService.normalize(toNumber);
       const to =
         direction === "inbound"
-          ? normalizePhoneNumber(toNumber)
-          : normalizePhoneNumber(fromNumber);
+          ? phoneNumberService.normalize(toNumber)
+          : phoneNumberService.normalize(fromNumber);
 
       whatsappLogger.info(`[${accountId}] ✅ Phone numbers normalized`, {
         direction,
@@ -1950,14 +2135,14 @@ export class WhatsAppService extends EventEmitter {
       });
 
       const messageData = {
-        id: generateMessageId(),
+        id: generateMessageId(accountId),
         accountId,
         from,
         to,
         message: sanitizeMessageContent(messageText),
         type: messageType,
         direction,
-        messageId: message.key.id || generateMessageId(),
+        messageId: message.key.id || generateMessageId(accountId),
         timestamp:
           message.messageTimestamp?.toString() || getCurrentTimestamp(),
         rawData: JSON.stringify(message),
@@ -2077,8 +2262,8 @@ export class WhatsAppService extends EventEmitter {
 
         this.accounts.set(dbAccount.id, account);
 
-        // Auto-connect all accounts with session files
-        if (true) {
+        // ✅ Configurable auto-connect behavior
+        if (appConfig.whatsapp.autoConnectExistingAccounts) {
           setTimeout(() => {
             this.connectAccount(dbAccount.id);
           }, 2000);
@@ -2107,6 +2292,7 @@ export class WhatsAppService extends EventEmitter {
    * Start webhook processing
    */
   private startWebhookProcessing(): void {
+    // Legacy webhook processing - now mainly for cleanup of old pending messages
     this.webhookProcessingInterval = setInterval(async () => {
       try {
         const pendingMessages =
@@ -2114,40 +2300,33 @@ export class WhatsAppService extends EventEmitter {
 
         if (pendingMessages.length > 0) {
           whatsappLogger.info(
-            `Processing ${pendingMessages.length} pending webhook messages`,
+            `Found ${pendingMessages.length} legacy pending webhook messages, adding to queue`,
           );
 
-          const results = await webhookService.sendBatch(pendingMessages);
-
-          whatsappLogger.info(`Webhook batch completed`, {
-            total: pendingMessages.length,
-            successful: results.successful,
-            failed: results.failed,
-          });
-
-          // Update database with results
-          for (const result of results.results) {
-            const message = pendingMessages.find(
-              (m) => m.id === result.messageId,
+          // Add legacy pending messages to new webhook queue
+          for (const message of pendingMessages) {
+            await webhookQueue.addToQueue(
+              message.message_id,
+              message.id,
+              message.from,
+              message.to,
+              message.message,
+              message.timestamp,
+              message.type,
+              0, // lowest priority for legacy cleanup
             );
-            if (message) {
-              await databaseManager.updateMessageWebhookStatus(
-                result.messageId,
-                result.success,
-                result.attempts,
-              );
-            }
           }
-        } else {
-          whatsappLogger.debug("No pending webhook messages found");
         }
       } catch (error) {
-        whatsappLogger.error("Error processing webhook messages:", error);
+        whatsappLogger.error(
+          "Error processing legacy webhook messages:",
+          error,
+        );
       }
-    }, 2000); // Process every 2 seconds for faster delivery
+    }, 10000); // Check every 10 seconds for legacy cleanup
 
     whatsappLogger.info(
-      "Webhook processing started - checking every 2 seconds for maximum responsiveness",
+      "Legacy webhook processing started - checking every 10 seconds for cleanup",
     );
   }
 
@@ -2194,6 +2373,12 @@ export class WhatsAppService extends EventEmitter {
    * Process offline messages manually
    */
   private async processOfflineMessages(accountId: string): Promise<void> {
+    // ❌ DISABLED: Process offline messages to prevent history sync
+    whatsappLogger.info(
+      `🚫 processOfflineMessages DISABLED for ${accountId} - preventing history sync`,
+    );
+
+    /* ORIGINAL CODE DISABLED TO PREVENT HISTORY MESSAGE PROCESSING
     whatsappLogger.info(`Processing offline messages for ${accountId}`);
 
     try {
@@ -2221,6 +2406,7 @@ export class WhatsAppService extends EventEmitter {
         error,
       );
     }
+    */
   }
 
   /**
@@ -2230,38 +2416,35 @@ export class WhatsAppService extends EventEmitter {
     whatsappLogger.info("Manual webhook processing triggered");
 
     try {
+      // Force process the webhook queue
+      await webhookQueue.forceProcess();
+
+      // Also handle any legacy pending messages
       const pendingMessages = await databaseManager.getPendingWebhookMessages();
 
       if (pendingMessages.length > 0) {
         whatsappLogger.info(
-          `Processing ${pendingMessages.length} pending webhook messages manually`,
+          `Found ${pendingMessages.length} legacy pending messages, adding to queue`,
         );
 
-        const results = await webhookService.sendBatch(pendingMessages);
-
-        whatsappLogger.info(`Manual webhook batch completed`, {
-          total: pendingMessages.length,
-          successful: results.successful,
-          failed: results.failed,
-        });
-
-        // Update database with results
-        for (const result of results.results) {
-          const message = pendingMessages.find(
-            (m) => m.id === result.messageId,
+        // Add to webhook queue for atomic processing
+        for (const message of pendingMessages) {
+          await webhookQueue.addToQueue(
+            message.message_id,
+            message.id,
+            message.from,
+            message.to,
+            message.message,
+            message.timestamp,
+            message.type,
+            2, // higher priority for manual triggers
           );
-          if (message) {
-            await databaseManager.updateMessageWebhookStatus(
-              result.messageId,
-              result.success,
-              result.attempts,
-            );
-          }
         }
+
+        // Process again after adding legacy messages
+        await webhookQueue.forceProcess();
       } else {
-        whatsappLogger.debug(
-          "No pending webhook messages found for manual processing",
-        );
+        whatsappLogger.debug("No legacy pending webhook messages found");
       }
     } catch (error) {
       whatsappLogger.error("Error in manual webhook processing:", error);
@@ -2352,12 +2535,15 @@ export class WhatsAppService extends EventEmitter {
 
     return {
       totalAccounts: accounts.length,
-      connectedAccounts: accounts.filter((a) => a.status === "connected")
-        .length,
-      disconnectedAccounts: accounts.filter((a) => a.status === "disconnected")
-        .length,
-      qrPendingAccounts: accounts.filter((a) => a.status === "qr_pending")
-        .length,
+      connectedAccounts: accounts.filter(
+        (a: WhatsAppAccount) => a.status === "connected",
+      ).length,
+      disconnectedAccounts: accounts.filter(
+        (a: WhatsAppAccount) => a.status === "disconnected",
+      ).length,
+      qrPendingAccounts: accounts.filter(
+        (a: WhatsAppAccount) => a.status === "qr_pending",
+      ).length,
       isInitialized: this.isInitialized,
     };
   }
@@ -2367,6 +2553,10 @@ export class WhatsAppService extends EventEmitter {
 export const whatsappService = new WhatsAppService();
 
 // Add test message insertion method
-(whatsappService as any).insertTestMessage = async function (from: string, to: string, message: string) {
+(whatsappService as any).insertTestMessage = async function (
+  from: string,
+  to: string,
+  message: string,
+) {
   return await messageProcessor.insertTestMessage(from, to, message);
 };
